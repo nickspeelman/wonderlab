@@ -610,7 +610,9 @@
           x=gamma;
           y=beta;
       }
-      tiltGravity={x:deadZone(x)*.9,y:deadZone(y)*.9};
+      // ChromeOS reports the vertical sensor axis opposite the visible
+      // screen direction on this tablet, so invert only Y. Keep X unchanged.
+      tiltGravity={x:deadZone(x)*.9,y:deadZone(-y)*.9};
     };
     window.addEventListener('deviceorientation',tilt);
     const tick=now=>{ const dt=Math.min(.03,(now-last)/1000);last=now; const r=stage.getBoundingClientRect();
