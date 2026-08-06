@@ -577,11 +577,39 @@
         const radius=o=>o.type==='stick'?42:38;const minDistance=radius(p)+radius(q);if(d>0&&d<minDistance){const nx=dx/d,ny=dy/d,over=minDistance-d;p.x-=nx*(over/2)/r.width;p.y-=ny*(over/2)/r.height;q.x+=nx*(over/2)/r.width;q.y+=ny*(over/2)/r.height;const rel=((q.vx-p.vx)*r.width)*nx+((q.vy-p.vy)*r.height)*ny;if(rel<0){const normRel=rel/Math.max(r.width,r.height);const impact=-normRel;const imp=impact*.9;p.vx-=imp*nx;p.vy-=imp*ny;q.vx+=imp*nx;q.vy+=imp*ny;if(p.type==='stick')p.omega-=ny*imp*4;if(q.type==='stick')q.omega+=ny*imp*4;collisionSound(impact,[p.id,q.id].sort().join(':'));}}
       }
     };
+    // DeviceOrientationEvent values remain relative to the Chromebook's natural
+    // portrait axes, even when ChromeOS presents the kiosk in landscape. Keep a
+    // screen-relative horizontal tilt value and apply it inside the animation
+    // loop so the force does not depend on the sensor's event frequency.
+    let tiltX=0;
+    const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
+    const getScreenAngle=()=>{
+      const raw=Number.isFinite(screen.orientation?.angle)
+        ? screen.orientation.angle
+        : Number(window.orientation)||0;
+      return ((raw%360)+360)%360;
+    };
+    const screenHorizontalTilt=(beta,gamma)=>{
+      switch(getScreenAngle()){
+        case 90: return beta;
+        case 180: return -gamma;
+        case 270: return -beta;
+        default: return gamma;
+      }
+    };
+    const tilt=e=>{
+      if(!state.preferences.tilt || e.beta==null || e.gamma==null){tiltX=0;return;}
+      const raw=screenHorizontalTilt(e.beta,e.gamma);
+      const normalized=clamp(raw/35,-1,1);
+      const deadZoned=Math.abs(normalized)<.06?0:normalized;
+      tiltX=tiltX*.72+deadZoned*.28;
+    };
+
     const tick=now=>{ const dt=Math.min(.03,(now-last)/1000);last=now; const r=stage.getBoundingClientRect();
       // Do not run physics until layout has produced a real canvas. Older builds
       // could divide by zero here and permanently save Infinity/NaN positions.
       if(r.width<100 || r.height<100){raf=requestAnimationFrame(tick);return;}
-      let strongestWall=0; for(const o of state.physics.objects){ o.vy+=.75*dt;o.x+=o.vx*dt;o.y+=o.vy*dt;
+      let strongestWall=0; for(const o of state.physics.objects){ o.vx+=tiltX*.72*dt;o.vy+=.75*dt;o.x+=o.vx*dt;o.y+=o.vy*dt;
         let halfX=38,halfY=38;
         if(o.type==='stick'){
           o.angle=(o.angle||0)+(o.omega||0)*dt;
@@ -605,7 +633,7 @@
         }
       } bounceSound(strongestWall);collide();for(const o of state.physics.objects){const el=els.get(o.id);if(el){el.style.left=`calc(${o.x*100}% - ${o.type==='stick'?43:38}px)`;el.style.top=`calc(${o.y*100}% - ${o.type==='stick'?12:38}px)`;el.style.transform=o.type==='stick'?`rotate(${o.angle||0}rad)`:'';}}raf=requestAnimationFrame(tick); };
     raf=requestAnimationFrame(tick); const saveInt=setInterval(()=>save('physics'),1000); activeCleanup=()=>{cancelAnimationFrame(raf);clearInterval(saveInt);save('physics');window.removeEventListener('deviceorientation',tilt)};
-    const tilt=e=>{if(!state.preferences.tilt||e.gamma==null)return;const n=Math.max(-1,Math.min(1,e.gamma/35));state.physics.objects.forEach(o=>o.vx+=n*.012);};window.addEventListener('deviceorientation',tilt);
+    window.addEventListener('deviceorientation',tilt);
     function bindPhysics(el,o){let drag=false,lastP=null,lastT=0;el.onpointerdown=e=>{drag=true;lastP={x:e.clientX,y:e.clientY};lastT=performance.now();el.setPointerCapture(e.pointerId);o.vx=o.vy=0;playNamed('motion','pickup',MIX.motion*.8);speak(`${o.color||''} ${o.type}`.trim());};el.onpointermove=e=>{if(!drag)return;const r=stage.getBoundingClientRect(),now=performance.now(),dt=Math.max(16,now-lastT);const dx=e.clientX-lastP.x,dy=e.clientY-lastP.y;o.vx=dx/r.width/(dt/1000);o.vy=dy/r.height/(dt/1000);if(o.type==='stick'&&Math.hypot(dx,dy)>1)o.omega+=(dx-dy)*.0025;o.x=(e.clientX-r.left)/r.width;o.y=(e.clientY-r.top)/r.height;lastP={x:e.clientX,y:e.clientY};lastT=now;};el.onpointerup=()=>{if(drag)playNamed('motion','drop',MIX.motion);drag=false;save('physics');};el.onpointercancel=el.onpointerup;}
   }
 
