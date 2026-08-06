@@ -282,3 +282,35 @@ button,input{font:inherit}.app{width:100%;height:100%;position:relative;overflow
 .brightness-btn .brightness-icon{display:none!important}
 .brightness-btn .level-number{display:block;font-size:24px!important;font-weight:950!important;line-height:1!important;background:rgba(255,255,255,.8);border-radius:10px;margin:0 auto 3px!important;width:34px;padding:3px}
 .brightness-btn .level-dots{display:block;font-size:10px!important;letter-spacing:1px!important;white-space:nowrap}
+
+/* V18 Motion Lab: direction-neutral abstract play surface. */
+.physics-stage{
+  isolation:isolate;
+  background:
+    radial-gradient(circle at 18% 24%,rgba(255,231,136,.72) 0 8%,rgba(255,231,136,0) 24%),
+    radial-gradient(circle at 82% 28%,rgba(168,216,238,.78) 0 9%,rgba(168,216,238,0) 26%),
+    radial-gradient(circle at 72% 78%,rgba(185,234,223,.72) 0 10%,rgba(185,234,223,0) 28%),
+    radial-gradient(circle at 25% 76%,rgba(255,182,189,.58) 0 8%,rgba(255,182,189,0) 25%),
+    #fffaf0;
+}
+.physics-stage::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:0;
+  pointer-events:none;
+  opacity:.34;
+  background-image:radial-gradient(circle,rgba(23,50,77,.34) 0 2px,transparent 2.5px);
+  background-size:34px 34px;
+  background-position:7px 9px;
+}
+.physics-stage::after{
+  content:"";
+  position:absolute;
+  inset:18px;
+  z-index:0;
+  pointer-events:none;
+  border:3px dashed rgba(23,50,77,.13);
+  border-radius:24px;
+}
+.physics-stage .physics-object{z-index:2}
