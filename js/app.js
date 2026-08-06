@@ -2,6 +2,7 @@
   'use strict';
 
   const APP_VERSION = 8;
+  const BUILD_VERSION = 'v20';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -671,6 +672,7 @@
       <div class="settings-row"><span><strong>Export usage data</strong></span><span><button class="adult-btn" id="exportCsv">CSV</button> <button class="adult-btn" id="exportJson">JSON</button></span></div>
       <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save to Drive</button></div>
       <div class="settings-row"><span><strong>Google Drive</strong><br><span class="small-note" id="driveStatus">${driveStatusText()}</span></span><button class="adult-btn" id="syncDrive">${driveAccessToken?'Sync now':'Connect / sync'}</button></div>
+      <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Use this to confirm the tablet received the latest update.</span></span><strong>${BUILD_VERSION}</strong></div>
       <div class="settings-row"><span><strong>Reset this lab</strong></span><button class="adult-btn" id="resetCurrent">Reset</button></div>
       <div class="settings-row"><span><strong>Reset all labs</strong></span><button class="adult-btn danger" id="resetAll">Reset all</button></div>
     </div><div class="modal-actions"><button class="adult-btn primary" id="doneSettings">Done</button></div></div>`;
