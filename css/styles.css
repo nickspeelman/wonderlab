@@ -359,3 +359,10 @@ button:disabled{opacity:.42;cursor:default;filter:saturate(.6)}
 .picture-size-btn:not(:disabled):active{transform:translateY(3px);box-shadow:0 2px 0 var(--navy)}
 .picture-help{min-height:36px;text-align:center;font-size:13px;line-height:1.2;font-weight:800;opacity:.65}.picture-empty{grid-column:1/-1;padding:15px 8px;font-weight:800;text-align:center;opacity:.65}
 @media(max-height:560px){.home-grid{gap:10px}.picture-object{width:84px;height:84px;margin:-42px 0 0 -42px}.picture-size-btn{height:58px;font-size:36px}.picture-side{gap:9px}.picture-shelf{gap:10px}.picture-container{top:8%;height:78%}}
+
+/* Wonder Lab owns long-press/touch gestures; suppress browser-native callouts. */
+img, button, canvas, .made-shape, .physics-object, .picture-object {
+  -webkit-touch-callout:none;
+  -webkit-user-select:none;
+  user-select:none;
+}

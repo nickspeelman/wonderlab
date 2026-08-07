@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = 8;
-  const BUILD_VERSION = 'v24.1';
+  const BUILD_VERSION = 'v24.2';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -1126,6 +1126,16 @@
     el.classList.toggle('low',pct<=20||batteryInfo.charging);el.classList.toggle('critical',pct<=10&&!batteryInfo.charging);el.classList.toggle('very-low',pct<=5&&!batteryInfo.charging);el.classList.toggle('charging',batteryInfo.charging);
     fill.style.background=pct<=10?'#e63946':pct<=20?'#ffd23f':'#2a9d8f'; el.setAttribute('aria-label',`${pct}% battery${batteryInfo.charging?', charging':''}`);
   }
+
+  // Wonder Lab owns long-press gestures. Never let the browser turn them into
+  // native context menus, image previews, or drag interactions.
+  document.addEventListener('contextmenu', event => {
+    event.preventDefault();
+  }, {capture:true});
+
+  document.addEventListener('dragstart', event => {
+    event.preventDefault();
+  }, {capture:true});
 
   async function init(){
     await openDB(); await loadState(); await initBattery();
