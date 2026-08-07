@@ -1,9 +1,10 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = 9;
+  const DB_VERSION = 9;
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
+  const COMPANION_URL = 'https://wonderlab-companion.nickspeelman.com/';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
   const app = document.getElementById('app');
 
@@ -98,7 +99,7 @@
 
   async function openDB(){
     return new Promise((resolve,reject)=>{
-      const req = indexedDB.open(DB_NAME, APP_VERSION);
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const d = req.result;
         if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE);
@@ -265,53 +266,6 @@
 
   function activityLabel(id){ return activities.find(a=>a.id===id)?.label || id; }
 
-  function weeklySummary(){
-    const cutoff=weekAgoMs(),a=state.analytics;
-    const sessions=a.sessions.filter(s=>new Date(s.startedAt).getTime()>=cutoff);
-    if(a.currentSession && new Date(a.currentSession.startedAt).getTime()>=cutoff){
-      sessions.push({startedAt:a.currentSession.startedAt,durationMs:Date.now()-new Date(a.currentSession.startedAt).getTime()});
-    }
-    const events=a.events.filter(e=>new Date(e.time).getTime()>=cutoff);
-    const durationByActivity={};
-    for(const e of events){
-      if(e.event==='activity_exit' && e.details?.durationMs) durationByActivity[e.activity]=(durationByActivity[e.activity]||0)+e.details.durationMs;
-    }
-    if(state.currentScreen!=='home' && a.activityStartedAt){ durationByActivity[state.currentScreen]=(durationByActivity[state.currentScreen]||0)+(Date.now()-a.activityStartedAt); }
-    const favorite=Object.entries(durationByActivity).sort((x,y)=>y[1]-x[1])[0];
-    const milestones=Object.values(a.milestones).filter(m=>new Date(m.time).getTime()>=cutoff).sort((x,y)=>new Date(y.time)-new Date(x.time));
-    const colorCounts={red:0,yellow:0,blue:0,rainbow:0};
-    for(const e of events) if(e.activity==='drawing'&&e.event==='draw_color'&&colorCounts[e.details?.color]!==undefined) colorCounts[e.details.color]++;
-    const favoriteColor=Object.entries(colorCounts).sort((x,y)=>y[1]-x[1])[0];
-    return {
-      totalMs:sessions.reduce((n,s)=>n+(s.durationMs||0),0),
-      averageMs:sessions.length?sessions.reduce((n,s)=>n+(s.durationMs||0),0)/sessions.length:0,
-      sessions:sessions.length,
-      favorite,
-      newestMilestone:milestones[0],
-      savedDrawings:events.filter(e=>e.activity==='drawing'&&['drawing_exported','drawing_drive_saved'].includes(e.event)).length,
-      favoriteColor:favoriteColor&&favoriteColor[1]?favoriteColor[0]:null,
-      durationByActivity
-    };
-  }
-
-  function downloadBlob(blob,filename){
-    const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-  }
-
-  function exportUsage(format){
-    const stamp=new Date().toISOString().slice(0,10);
-    if(format==='json'){
-      const payload={exportedAt:nowISO(),appVersion:APP_VERSION,analytics:state.analytics};
-      downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),`roscoe-wonder-log-${stamp}.json`);
-      logEvent('parent','usage_exported',{format:'json'}); return;
-    }
-    const rows=[['time','lab','event','details_json']];
-    for(const e of state.analytics.events) rows.push([e.time,e.activity,e.event,JSON.stringify(e.details||{})]);
-    const csv=rows.map(row=>row.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n');
-    downloadBlob(new Blob([csv],{type:'text/csv'}),`roscoe-wonder-log-${stamp}.csv`);
-    logEvent('parent','usage_exported',{format:'csv'});
-  }
-
   function masterVolume(){ return Math.max(0,Math.min(1,+state.preferences.volume||0)); }
 
   function oneShot(path, relativeVolume=.5, playbackRate=1){
@@ -447,6 +401,7 @@
       if(screen!=='home') logEvent(screen,'activity_enter',{from:previous});
     }
     await Promise.all([save('currentScreen'),save('analytics')]);
+    if(screen==='home'&&state.device.deviceToken&&navigator.onLine)syncCompanionNow(false).catch(()=>{});
     if (screen==='home') renderHome(); else renderActivity(screen);
   }
 
@@ -636,7 +591,12 @@
   }
 
   function openDevicePairing(){
-    const bg=document.createElement('div');bg.className='modal-backdrop';bg.innerHTML=`<div class="modal"><h2>Pair this tablet</h2><p>In the Companion, open <strong>Pairing</strong> and generate a code. Enter the 8 digits here.</p><input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="1234 5678"><p class="small-note" id="pairStatus">${escapeHtml(devicePairingStatusText())}</p><div class="modal-actions"><button class="adult-btn" id="cancelPair">Cancel</button><button class="adult-btn primary" id="confirmPair">Pair device</button></div></div>`;document.body.appendChild(bg);
+    const bg=document.createElement('div');bg.className='modal-backdrop';bg.innerHTML=`<div class="modal"><h2>Pair this tablet</h2>
+      <div class="companion-qr-card pairing-qr-card">
+        <a href="${COMPANION_URL}" target="_blank" rel="noopener" aria-label="Open Wonder Lab Companion"><img src="./assets/companion-qr.png" alt="QR code for Wonder Lab Companion"></a>
+        <div><strong>Open the Companion</strong><br><span class="small-note">Scan with a phone, then open <strong>Pairing</strong> and generate a code.</span><br><a class="companion-url" href="${COMPANION_URL}" target="_blank" rel="noopener">wonderlab-companion.nickspeelman.com</a></div>
+      </div>
+      <p>Enter the 8-digit pairing code:</p><input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="1234 5678"><p class="small-note" id="pairStatus">${escapeHtml(devicePairingStatusText())}</p><div class="modal-actions"><button class="adult-btn" id="cancelPair">Cancel</button><button class="adult-btn primary" id="confirmPair">Pair device</button></div></div>`;document.body.appendChild(bg);
     const input=bg.querySelector('#pairCode'),status=bg.querySelector('#pairStatus'),confirm=bg.querySelector('#confirmPair');
     const close=()=>bg.remove();bg.onclick=e=>{if(e.target===bg)close()};bg.querySelector('#cancelPair').onclick=close;
     input.oninput=()=>{const digits=input.value.replace(/\D/g,'').slice(0,8);input.value=digits.length>4?digits.slice(0,4)+' '+digits.slice(4):digits};
@@ -1128,6 +1088,10 @@
     <div class="modal">
       <h2>Wonder Lab Settings</h2>
       <p>Type <strong>ENTER</strong> to continue.</p>
+      <div class="companion-quick-qr">
+        <a href="${COMPANION_URL}" target="_blank" rel="noopener" aria-label="Open Wonder Lab Companion"><img src="./assets/companion-qr.png" alt="QR code for Wonder Lab Companion"></a>
+        <span><strong>Need the Companion?</strong><br><span class="small-note">Scan with a phone.</span></span>
+      </div>
 
       <input
         id="gateInput"
@@ -1172,29 +1136,61 @@
     }
   };
 }
-  function drawingsSyncStatusText(){
-    const queued=state.drawings?.queue?.length||0;
-    if(!state.device.deviceToken)return queued?`${queued} saved locally · pair tablet to sync`:'Pair tablet to sync saved drawings';
-    if(state.drawings?.lastError)return `${queued?`${queued} waiting · `:''}${state.drawings.lastError}`;
-    if(queued)return `${queued} drawing${queued===1?'':'s'} waiting to sync`;
-    if(state.drawings?.lastSyncAt)return `Up to date · last synced ${new Date(state.drawings.lastSyncAt).toLocaleString()}`;
-    return 'Ready to sync saved drawings';
+  function companionSyncStatusText(){
+    const drawingQueue=state.drawings?.queue?.length||0;
+    const logPending=wonderLogPendingCount();
+    if(!state.device.deviceToken)return 'Not paired yet';
+    if(state.device.lastError)return state.device.lastError;
+    if(state.drawings?.lastError&&drawingQueue)return state.drawings.lastError;
+    if(state.analytics?.lastError&&logPending)return state.analytics.lastError;
+    const pending=drawingQueue+logPending;
+    if(pending)return `${pending} item${pending===1?'':'s'} waiting to sync`;
+    const latest=[state.device.lastSyncAt,state.drawings?.lastSyncAt,state.analytics?.lastSyncAt].filter(Boolean).sort().at(-1);
+    return latest?`Up to date · last synced ${new Date(latest).toLocaleString()}`:'Paired · automatic sync is on';
+  }
+
+  async function syncCompanionNow(showMessage=true){
+    if(!state.device.deviceToken){if(showMessage)toast('Pair this tablet first');return false;}
+    if(!navigator.onLine){if(showMessage)toast('Waiting for Wi-Fi');return false;}
+    await Promise.allSettled([
+      syncPictureLibraryFromBackend(false),
+      syncDrawingQueue(false),
+      syncWonderLog(false)
+    ]);
+    const failed=Boolean(state.device.lastError||state.drawings?.lastError||state.analytics?.lastError);
+    if(showMessage)toast(failed?'Some Companion data could not sync':'Companion synced');
+    return !failed;
   }
 
   function openParentControls(){
-    const bg=document.createElement('div'); bg.className='modal-backdrop'; bg.innerHTML=`<div class="modal"><h2>Wonder Lab Settings</h2><div class="settings-list">
-      <div class="settings-row"><span><strong>Voice responses</strong><br><span class="small-note">Short spoken words describe Roscoe's actions.</span></span><button class="adult-btn" id="voiceBtn">${state.preferences.voiceResponses?'On':'Off'}</button></div>
-      <div class="settings-row"><span><strong>Sound effects</strong><br><span class="small-note">Every lab still works when these are off.</span></span><button class="adult-btn" id="effectsBtn">${state.preferences.soundEffects?'On':'Off'}</button></div>
-      <div class="settings-row"><label for="volume"><strong>Audio volume</strong></label><input id="volume" type="range" min="0" max="1" step="0.05" value="${state.preferences.volume}"></div>
-      <div class="settings-row"><span><strong>Tilt controls</strong></span><button class="adult-btn" id="tiltBtn">${state.preferences.tilt?'On':'Off'}</button></div>
-      <div class="settings-row"><span><strong>Wonder Log</strong><br><span class="small-note">Records play sessions and activity for the Companion.</span></span><button class="adult-btn" id="insightsBtn">${analyticsEnabled()?'On':'Off'}</button></div>
-      <div class="settings-row"><span><strong>Wonder Log sync</strong><br><span class="small-note" id="wonderLogStatus">${wonderLogSyncStatusText()}</span></span><button class="adult-btn" id="syncWonderLog" ${state.device.deviceToken?'':'disabled'}>Sync now</button></div>
-      <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save</button></div>
-      <div class="settings-row"><span><strong>Saved drawings</strong><br><span class="small-note" id="driveStatus">${drawingsSyncStatusText()}</span></span><button class="adult-btn" id="syncDrive" ${state.device.deviceToken?'':'disabled'}>Sync now</button></div>
-      <div class="settings-row"><span><strong>Device pairing</strong><br><span class="small-note" id="pairingStatus">${devicePairingStatusText()}</span></span><span><button class="adult-btn" id="pairDevice">${state.device.deviceToken?'Pair again':'Pair device'}</button> <button class="adult-btn" id="syncPictures" ${state.device.deviceToken?'':'disabled'}>Sync pictures</button></span></div>
-      <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Use this to confirm the tablet received the latest update.</span></span><strong id="buildVersionValue">${buildVersion}</strong></div>
-      <div class="settings-row"><span><strong>Reset this lab</strong></span><button class="adult-btn" id="resetCurrent">Reset</button></div>
-      <div class="settings-row"><span><strong>Reset all labs</strong></span><button class="adult-btn danger" id="resetAll">Reset all</button></div>
+    const currentLab=activities.find(a=>a.id===state.currentScreen);
+    const resetCurrentRow=currentLab?`<div class="settings-row"><span><strong>Reset ${escapeHtml(currentLab.label)}</strong><br><span class="small-note">Clears only this Lab.</span></span><button class="adult-btn" id="resetCurrent">Reset</button></div>`:'';
+    const bg=document.createElement('div'); bg.className='modal-backdrop'; bg.innerHTML=`<div class="modal settings-modal"><h2>Wonder Lab Settings</h2><div class="settings-list">
+      <section class="settings-section"><h3>Audio</h3>
+        <div class="settings-row"><span><strong>Voice responses</strong><br><span class="small-note">Short spoken words describe Roscoe's actions.</span></span><button class="adult-btn" id="voiceBtn">${state.preferences.voiceResponses?'On':'Off'}</button></div>
+        <div class="settings-row"><span><strong>Sound effects</strong><br><span class="small-note">Every Lab still works when these are off.</span></span><button class="adult-btn" id="effectsBtn">${state.preferences.soundEffects?'On':'Off'}</button></div>
+        <div class="settings-row"><label for="volume"><strong>Audio volume</strong></label><input id="volume" type="range" min="0" max="1" step="0.05" value="${state.preferences.volume}"></div>
+      </section>
+      <section class="settings-section"><h3>Interaction</h3>
+        <div class="settings-row"><span><strong>Tilt controls</strong><br><span class="small-note">Used by Motion Lab.</span></span><button class="adult-btn" id="tiltBtn">${state.preferences.tilt?'On':'Off'}</button></div>
+      </section>
+      <section class="settings-section companion-section"><h3>Companion</h3>
+        <div class="companion-qr-card">
+          <a href="${COMPANION_URL}" target="_blank" rel="noopener" aria-label="Open Wonder Lab Companion"><img src="./assets/companion-qr.png" alt="QR code for Wonder Lab Companion"></a>
+          <div><strong>Pictures, drawings & Wonder Log</strong><br><span class="small-note">Scan this code with a phone to open the caregiver Companion.</span><br><a class="companion-url" href="${COMPANION_URL}" target="_blank" rel="noopener">wonderlab-companion.nickspeelman.com</a></div>
+        </div>
+        <div class="settings-row"><span><strong>Tablet pairing</strong><br><span class="small-note" id="pairingStatus">${devicePairingStatusText()}</span></span><button class="adult-btn" id="pairDevice">${state.device.deviceToken?'Pair again':'Pair tablet'}</button></div>
+        <div class="settings-row"><span><strong>Sync Companion</strong><br><span class="small-note" id="companionSyncStatus">${companionSyncStatusText()}</span></span><button class="adult-btn" id="syncCompanion" ${state.device.deviceToken?'':'disabled'}>Sync now</button></div>
+        <div class="settings-row"><span><strong>Wonder Log</strong><br><span class="small-note">Records play sessions and activity for the Companion.</span></span><button class="adult-btn" id="insightsBtn">${analyticsEnabled()?'On':'Off'}</button></div>
+        <div class="settings-row"><span><strong>Clear tablet Wonder Log</strong><br><span class="small-note">Useful for testing or starting fresh. Synced Companion history is separate.</span></span><button class="adult-btn danger-soft" id="clearWonderLog">Clear</button></div>
+      </section>
+      <section class="settings-section"><h3>About</h3>
+        <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Confirms the tablet received the latest update.</span></span><strong id="buildVersionValue">${buildVersion}</strong></div>
+      </section>
+      <section class="settings-section reset-section"><h3>Reset</h3>
+        ${resetCurrentRow}
+        <div class="settings-row"><span><strong>Reset all Labs</strong><br><span class="small-note">Clears the activity state for every Lab.</span></span><button class="adult-btn danger" id="resetAll">Reset all</button></div>
+      </section>
     </div><div class="modal-actions"><button class="adult-btn primary" id="doneSettings">Done</button></div></div>`;
     document.body.appendChild(bg); const close=()=>bg.remove(); bg.onclick=e=>{if(e.target===bg)close();}; bg.querySelector('#doneSettings').onclick=close;
     refreshBuildVersion().then(version=>{const el=bg.querySelector('#buildVersionValue');if(el)el.textContent=version;});
@@ -1203,12 +1199,10 @@
     bg.querySelector('#volume').oninput=async e=>{state.preferences.volume=+e.target.value;updateLoopVolumes();await save('preferences');};
     bg.querySelector('#tiltBtn').onclick=async e=>{state.preferences.tilt=!state.preferences.tilt;e.target.textContent=state.preferences.tilt?'On':'Off';await save('preferences');};
     bg.querySelector('#insightsBtn').onclick=async e=>{const turningOn=!analyticsEnabled();if(!turningOn)endSession();state.preferences.usageInsights=turningOn;e.target.textContent=turningOn?'On':'Off';await save('preferences');if(turningOn)startSession();if(state.device.deviceToken&&navigator.onLine)syncWonderLog(false).catch(()=>{});};
-    bg.querySelector('#syncWonderLog').onclick=async()=>{await syncWonderLog(true);const status=bg.querySelector('#wonderLogStatus');if(status)status.textContent=wonderLogSyncStatusText();};
-    bg.querySelector('#saveDrive').onclick=async()=>{await queueCurrentDrawing(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=drawingsSyncStatusText();};
-    bg.querySelector('#syncDrive').onclick=async()=>{await syncDrawingQueue(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=drawingsSyncStatusText();};
+    bg.querySelector('#clearWonderLog').onclick=()=>confirmClearWonderLog(bg);
+    bg.querySelector('#syncCompanion').onclick=async()=>{const button=bg.querySelector('#syncCompanion'),status=bg.querySelector('#companionSyncStatus');button.disabled=true;status.textContent='Syncing pictures, drawings & Wonder Log…';await syncCompanionNow(true);status.textContent=companionSyncStatusText();button.disabled=!state.device.deviceToken;};
     bg.querySelector('#pairDevice').onclick=()=>{close();openDevicePairing();};
-    bg.querySelector('#syncPictures').onclick=async()=>{const button=bg.querySelector('#syncPictures'),status=bg.querySelector('#pairingStatus');button.disabled=true;status.textContent='Syncing pictures…';await syncPictureLibraryFromBackend(true);status.textContent=devicePairingStatusText();button.disabled=!state.device.deviceToken;};
-    bg.querySelector('#resetCurrent').onclick=async()=>{close();await resetCurrent(false);};
+    const resetButton=bg.querySelector('#resetCurrent');if(resetButton)resetButton.onclick=async()=>{close();await resetCurrent(false);};
     bg.querySelector('#resetAll').onclick=()=>confirmResetAll(bg);
   }
 
@@ -1284,16 +1278,6 @@
     return events+sessions+milestones;
   }
 
-  function wonderLogSyncStatusText(){
-    const pending=pendingWonderLogCount();
-    if(!state.device.deviceToken)return pending?`${pending} observations saved locally · pair tablet to sync`:'Pair tablet to sync Wonder Log';
-    if(state.analytics.lastError)return `${pending?`${pending} waiting · `:''}${state.analytics.lastError}`;
-    if(pending)return `${pending} observation${pending===1?'':'s'} waiting to sync`;
-    if(state.analytics.lastSyncAt)return `Up to date · last synced ${new Date(state.analytics.lastSyncAt).toLocaleString()}`;
-    return 'Ready to sync Wonder Log';
-  }
-
-  let wonderLogSyncing=false;
   async function syncWonderLog(showMessage=false){
     if(wonderLogSyncing||!navigator.onLine||!state.device.deviceToken)return false;
     let pending=pendingWonderLogCount();
@@ -1329,49 +1313,10 @@
     }finally{wonderLogSyncing=false;}
   }
 
-  function openDashboard(){
-    const summary=weeklySummary();
-    const bg=document.createElement('div'); bg.className='modal-backdrop';
-    const durationRows=activities.map(a=>`<tr><td>${a.label}</td><td>${fmtDuration(summary.durationByActivity[a.id]||0)}</td></tr>`).join('');
-    bg.innerHTML=`<div class="modal dashboard-modal"><h2>Wonder Log</h2>
-      <p class="small-note">Local observations only. These are not developmental scores.</p>
-      <div class="dashboard-cards">
-        <div class="stat-card"><strong>${fmtDuration(summary.totalMs)}</strong><span>Lab time this week</span></div>
-        <div class="stat-card"><strong>${summary.favorite?activityLabel(summary.favorite[0]):'—'}</strong><span>Favorite lab this week</span></div>
-        <div class="stat-card"><strong>${summary.sessions}</strong><span>Sessions this week</span></div>
-        <div class="stat-card"><strong>${fmtDuration(summary.averageMs)}</strong><span>Average session</span></div>
-        <div class="stat-card"><strong>${summary.savedDrawings}</strong><span>Drawings saved to Drive</span></div>
-        <div class="stat-card"><strong>${summary.favoriteColor||'—'}</strong><span>Most-used paint</span></div>
-      </div>
-      <div class="dashboard-section"><h3>Recent discovery</h3><p>${summary.newestMilestone?`${summary.newestMilestone.label}<br><span class="small-note">${new Date(summary.newestMilestone.time).toLocaleString()}</span>`:'No discoveries recorded yet.'}</p></div>
-      <div class="dashboard-section"><h3>Time by lab</h3><table class="usage-table"><tbody>${durationRows}</tbody></table></div>
-      <div class="dashboard-section"><div class="heatmap-heading"><h3>Touch heat map</h3><select id="heatActivity">${activities.map(a=>`<option value="${a.id}">${a.label}</option>`).join('')}</select></div><canvas id="heatCanvas" class="heat-canvas" width="600" height="280"></canvas><p class="small-note">Sampled touch locations from the last seven days.</p></div>
-      <div class="modal-actions"><button class="adult-btn danger" id="clearUsage">Erase usage history</button><button class="adult-btn primary" id="closeDashboard">Done</button></div>
-    </div>`;
-    document.body.appendChild(bg);
-    const draw=()=>drawHeatmap(bg.querySelector('#heatCanvas'),bg.querySelector('#heatActivity').value);
-    bg.querySelector('#heatActivity').onchange=draw; requestAnimationFrame(draw);
-    bg.querySelector('#closeDashboard').onclick=()=>bg.remove(); bg.onclick=e=>{if(e.target===bg)bg.remove();};
-    bg.querySelector('#clearUsage').onclick=()=>confirmClearUsage(bg);
-  }
-
-  function drawHeatmap(canvas,activity){
-    const ctx=canvas.getContext('2d'),cutoff=weekAgoMs();
-    const pts=state.analytics.touches.filter(p=>p.activity===activity&&new Date(p.time).getTime()>=cutoff);
-    ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#fffdf7';ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.strokeStyle='#17324d';ctx.lineWidth=5;ctx.strokeRect(2.5,2.5,canvas.width-5,canvas.height-5);
-    for(const p of pts){
-      const g=ctx.createRadialGradient(p.x*canvas.width,p.y*canvas.height,0,p.x*canvas.width,p.y*canvas.height,32);
-      g.addColorStop(0,'rgba(230,57,70,.30)');g.addColorStop(.55,'rgba(255,210,63,.16)');g.addColorStop(1,'rgba(58,134,255,0)');
-      ctx.fillStyle=g;ctx.fillRect(p.x*canvas.width-32,p.y*canvas.height-32,64,64);
-    }
-    if(!pts.length){ctx.fillStyle='#17324d';ctx.font='700 20px system-ui';ctx.textAlign='center';ctx.fillText('No touch samples yet',canvas.width/2,canvas.height/2);}
-  }
-
-  function confirmClearUsage(parent){
+  function confirmClearWonderLog(parent){
     parent.remove(); const bg=document.createElement('div'); bg.className='modal-backdrop';
-    bg.innerHTML=`<div class="modal"><h2>Erase Usage History?</h2><p>This clears sessions, milestones, and heat-map data. It does not change Roscoe's labs or drawings. Type <strong>ERASE</strong>.</p><input id="eraseWord" autocomplete="off"><div class="modal-actions"><button class="adult-btn" id="cancelErase">Cancel</button><button class="adult-btn danger" id="confirmErase">Erase</button></div></div>`;
-    document.body.appendChild(bg);bg.querySelector('#cancelErase').onclick=()=>bg.remove();bg.querySelector('#confirmErase').onclick=async()=>{if(bg.querySelector('#eraseWord').value.trim().toUpperCase()!=='ERASE')return;state.analytics=clone(defaults.analytics);await save('analytics');startSession();bg.remove();toast('Usage history erased');};
+    bg.innerHTML=`<div class="modal"><h2>Clear Tablet Wonder Log?</h2><p>This clears the Wonder Log history stored on this tablet. It does not erase data already synced to the Companion. Type <strong>ERASE</strong>.</p><input id="eraseWord" autocomplete="off"><div class="modal-actions"><button class="adult-btn" id="cancelErase">Cancel</button><button class="adult-btn danger" id="confirmErase">Erase</button></div></div>`;
+    document.body.appendChild(bg);bg.querySelector('#cancelErase').onclick=()=>bg.remove();bg.querySelector('#confirmErase').onclick=async()=>{if(bg.querySelector('#eraseWord').value.trim().toUpperCase()!=='ERASE')return;state.analytics=clone(defaults.analytics);await save('analytics');startSession();bg.remove();toast('Tablet Wonder Log cleared');};
   }
 
   // A small global margin for near-missed touch/button presses. Mouse input is unchanged.

@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.2';
+const CACHE = 'roscoe-wonder-lab-26.3';
 
 const ASSETS = [
   './',
@@ -7,7 +7,8 @@ const ASSETS = [
   './js/app.js',
   './manifest.webmanifest',
   './assets/icons/icon-192.png',
-  './assets/icons/icon-512.png'
+  './assets/icons/icon-512.png',
+  './assets/companion-qr.png'
 ];
 
 const CORE_PATHS = new Set([
