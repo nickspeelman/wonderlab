@@ -32,7 +32,9 @@
       sessions: [],
       currentSession: null,
       activityStartedAt: null,
-      activityDurations: {}
+      activityDurations: {},
+      lastSyncAt: null,
+      lastError: null
     }
   };
 
@@ -137,6 +139,14 @@
     state.drawing={...defaults.drawing,...(state.drawing||{})};
     state.drawings={...defaults.drawings,...(state.drawings||{})};
     if(!Array.isArray(state.drawings.queue))state.drawings.queue=[];
+    state.analytics={...defaults.analytics,...(state.analytics||{})};
+    if(!Array.isArray(state.analytics.events))state.analytics.events=[];
+    if(!Array.isArray(state.analytics.sessions))state.analytics.sessions=[];
+    if(!Array.isArray(state.analytics.touches))state.analytics.touches=[];
+    if(!state.analytics.milestones||typeof state.analytics.milestones!=='object')state.analytics.milestones={};
+    state.analytics.events=state.analytics.events.map(item=>({...item,id:/^[0-9a-f-]{36}$/i.test(String(item.id||''))?item.id:crypto.randomUUID(),syncedAt:item.syncedAt||null}));
+    state.analytics.sessions=state.analytics.sessions.map(item=>({...item,id:/^[0-9a-f-]{36}$/i.test(String(item.id||''))?item.id:crypto.randomUUID(),syncedAt:item.syncedAt||null}));
+    Object.entries(state.analytics.milestones).forEach(([key,item])=>{state.analytics.milestones[key]={...item,key:item?.key||key,syncedAt:item?.syncedAt||null};});
     state.tapAndMake={...defaults.tapAndMake,...(state.tapAndMake||{})};
     state.tapAndMake.shapes=(state.tapAndMake.shapes||[]).map(x=>({...x,color:x.color||'red'}));
     state.physics={...defaults.physics,...(state.physics||{})};
@@ -155,7 +165,7 @@
     if(state.physics.objects.length && state.physics.objects.every(o=>o.x>.94 || o.y<.06)){
       state.physics.objects=clone(defaults.physics.objects);
     }
-    await Promise.all([save('switchboard'),save('colorLight'),save('drawing')]);
+    await Promise.all([save('switchboard'),save('colorLight'),save('drawing'),save('analytics')]);
   }
   const save = key => idbSet(key, clone(state[key]));
 
@@ -174,14 +184,14 @@
 
   function logEvent(activity,event,details={}){
     if(!analyticsEnabled()) return;
-    state.analytics.events.push({time:nowISO(),activity,event,details});
+    state.analytics.events.push({id:crypto.randomUUID(),time:nowISO(),activity,event,details,syncedAt:null});
     trimAnalytics();
     save('analytics').catch(()=>{});
   }
 
   function markMilestone(key,label,activity){
     if(!analyticsEnabled() || state.analytics.milestones[key]) return;
-    state.analytics.milestones[key]={time:nowISO(),label,activity};
+    state.analytics.milestones[key]={key,time:nowISO(),label,activity,syncedAt:null};
     logEvent(activity,'milestone',{key,label});
   }
 
@@ -202,6 +212,10 @@
 
   function endSession(){
     if(!analyticsEnabled() || !state.analytics.currentSession) return;
+    if(state.currentScreen && state.currentScreen!=='home' && state.analytics.activityStartedAt){
+      const durationMs=Math.max(0,Date.now()-state.analytics.activityStartedAt);
+      logEvent(state.currentScreen,'activity_exit',{durationMs,to:'session_end'});
+    }
     closeActivitySegment(null);
     const cur=state.analytics.currentSession;
     state.analytics.sessions.push({
@@ -210,7 +224,8 @@
       endedAt:nowISO(),
       durationMs:Math.max(0,Date.now()-new Date(cur.startedAt).getTime()),
       batteryStart:cur.batteryStart,
-      batteryEnd:batteryInfo?Math.round(batteryInfo.level*100):null
+      batteryEnd:batteryInfo?Math.round(batteryInfo.level*100):null,
+      syncedAt:null
     });
     state.analytics.currentSession=null;
     trimAnalytics();
@@ -581,7 +596,7 @@
       const result=await wonderBackend('claimDeviceCommandResult',{requestId,deviceToken:state.device.deviceToken});
       if(result.status==='complete')return result.payload;
     }
-    throw new Error('Drawing sync timed out. It may still have completed.');
+    throw new Error('Tablet sync timed out. It may still have completed.');
   }
 
   function devicePairingStatusText(){
@@ -598,6 +613,7 @@
     await save('device');
     await syncPictureLibraryFromBackend(true);
     await syncDrawingQueue(false);
+    await syncWonderLog(false);
     return result;
   }
 
@@ -1171,9 +1187,8 @@
       <div class="settings-row"><span><strong>Sound effects</strong><br><span class="small-note">Every lab still works when these are off.</span></span><button class="adult-btn" id="effectsBtn">${state.preferences.soundEffects?'On':'Off'}</button></div>
       <div class="settings-row"><label for="volume"><strong>Audio volume</strong></label><input id="volume" type="range" min="0" max="1" step="0.05" value="${state.preferences.volume}"></div>
       <div class="settings-row"><span><strong>Tilt controls</strong></span><button class="adult-btn" id="tiltBtn">${state.preferences.tilt?'On':'Off'}</button></div>
-      <div class="settings-row"><span><strong>Usage insights</strong><br><span class="small-note">Stored only on this tablet.</span></span><button class="adult-btn" id="insightsBtn">${analyticsEnabled()?'On':'Off'}</button></div>
-      <div class="settings-row"><span><strong>Engagement dashboard</strong></span><button class="adult-btn" id="dashboardBtn">View</button></div>
-      <div class="settings-row"><span><strong>Export usage data</strong></span><span><button class="adult-btn" id="exportCsv">CSV</button> <button class="adult-btn" id="exportJson">JSON</button></span></div>
+      <div class="settings-row"><span><strong>Wonder Log</strong><br><span class="small-note">Records play sessions and activity for the Companion.</span></span><button class="adult-btn" id="insightsBtn">${analyticsEnabled()?'On':'Off'}</button></div>
+      <div class="settings-row"><span><strong>Wonder Log sync</strong><br><span class="small-note" id="wonderLogStatus">${wonderLogSyncStatusText()}</span></span><button class="adult-btn" id="syncWonderLog" ${state.device.deviceToken?'':'disabled'}>Sync now</button></div>
       <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save</button></div>
       <div class="settings-row"><span><strong>Saved drawings</strong><br><span class="small-note" id="driveStatus">${drawingsSyncStatusText()}</span></span><button class="adult-btn" id="syncDrive" ${state.device.deviceToken?'':'disabled'}>Sync now</button></div>
       <div class="settings-row"><span><strong>Device pairing</strong><br><span class="small-note" id="pairingStatus">${devicePairingStatusText()}</span></span><span><button class="adult-btn" id="pairDevice">${state.device.deviceToken?'Pair again':'Pair device'}</button> <button class="adult-btn" id="syncPictures" ${state.device.deviceToken?'':'disabled'}>Sync pictures</button></span></div>
@@ -1187,10 +1202,8 @@
     bg.querySelector('#effectsBtn').onclick=async e=>{state.preferences.soundEffects=!state.preferences.soundEffects;e.target.textContent=state.preferences.soundEffects?'On':'Off';await save('preferences');if(!state.preferences.soundEffects)stopAllLoops();else{if(state.currentScreen==='switchboard')syncSwitchSounds();playNamed('ui','click',MIX.ui);}};
     bg.querySelector('#volume').oninput=async e=>{state.preferences.volume=+e.target.value;updateLoopVolumes();await save('preferences');};
     bg.querySelector('#tiltBtn').onclick=async e=>{state.preferences.tilt=!state.preferences.tilt;e.target.textContent=state.preferences.tilt?'On':'Off';await save('preferences');};
-    bg.querySelector('#insightsBtn').onclick=async e=>{const turningOn=!analyticsEnabled();if(!turningOn)endSession();state.preferences.usageInsights=turningOn;e.target.textContent=turningOn?'On':'Off';await save('preferences');if(turningOn)startSession();};
-    bg.querySelector('#dashboardBtn').onclick=()=>{close();openDashboard();};
-    bg.querySelector('#exportCsv').onclick=()=>exportUsage('csv');
-    bg.querySelector('#exportJson').onclick=()=>exportUsage('json');
+    bg.querySelector('#insightsBtn').onclick=async e=>{const turningOn=!analyticsEnabled();if(!turningOn)endSession();state.preferences.usageInsights=turningOn;e.target.textContent=turningOn?'On':'Off';await save('preferences');if(turningOn)startSession();if(state.device.deviceToken&&navigator.onLine)syncWonderLog(false).catch(()=>{});};
+    bg.querySelector('#syncWonderLog').onclick=async()=>{await syncWonderLog(true);const status=bg.querySelector('#wonderLogStatus');if(status)status.textContent=wonderLogSyncStatusText();};
     bg.querySelector('#saveDrive').onclick=async()=>{await queueCurrentDrawing(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=drawingsSyncStatusText();};
     bg.querySelector('#syncDrive').onclick=async()=>{await syncDrawingQueue(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=drawingsSyncStatusText();};
     bg.querySelector('#pairDevice').onclick=()=>{close();openDevicePairing();};
@@ -1262,6 +1275,59 @@
     }finally{drawingSyncing=false;}
   }
 
+
+
+  function pendingWonderLogCount(){
+    const events=state.analytics.events.filter(item=>!item.syncedAt).length;
+    const sessions=state.analytics.sessions.filter(item=>!item.syncedAt).length;
+    const milestones=Object.values(state.analytics.milestones).filter(item=>!item.syncedAt).length;
+    return events+sessions+milestones;
+  }
+
+  function wonderLogSyncStatusText(){
+    const pending=pendingWonderLogCount();
+    if(!state.device.deviceToken)return pending?`${pending} observations saved locally · pair tablet to sync`:'Pair tablet to sync Wonder Log';
+    if(state.analytics.lastError)return `${pending?`${pending} waiting · `:''}${state.analytics.lastError}`;
+    if(pending)return `${pending} observation${pending===1?'':'s'} waiting to sync`;
+    if(state.analytics.lastSyncAt)return `Up to date · last synced ${new Date(state.analytics.lastSyncAt).toLocaleString()}`;
+    return 'Ready to sync Wonder Log';
+  }
+
+  let wonderLogSyncing=false;
+  async function syncWonderLog(showMessage=false){
+    if(wonderLogSyncing||!navigator.onLine||!state.device.deviceToken)return false;
+    let pending=pendingWonderLogCount();
+    if(!pending){
+      state.analytics.lastError=null;
+      if(showMessage)toast('Wonder Log is up to date');
+      return true;
+    }
+    wonderLogSyncing=true;state.analytics.lastError=null;await save('analytics');
+    try{
+      let batches=0;
+      while(pendingWonderLogCount()&&batches<80){
+        const events=state.analytics.events.filter(item=>!item.syncedAt).slice(0,75).map(({syncedAt,...item})=>item);
+        const sessions=state.analytics.sessions.filter(item=>!item.syncedAt).slice(0,20).map(({syncedAt,...item})=>item);
+        const milestones=Object.values(state.analytics.milestones).filter(item=>!item.syncedAt).slice(0,20).map(({syncedAt,...item})=>item);
+        const result=await sendTabletCommand('syncWonderLog',{
+          eventsJson:JSON.stringify(events),sessionsJson:JSON.stringify(sessions),milestonesJson:JSON.stringify(milestones),
+        });
+        const syncedAt=result.syncedAt||nowISO();
+        const eventIds=new Set(result.acceptedEventIds||[]),sessionIds=new Set(result.acceptedSessionIds||[]),milestoneKeys=new Set(result.acceptedMilestoneKeys||[]);
+        state.analytics.events.forEach(item=>{if(eventIds.has(item.id))item.syncedAt=syncedAt;});
+        state.analytics.sessions.forEach(item=>{if(sessionIds.has(item.id))item.syncedAt=syncedAt;});
+        Object.entries(state.analytics.milestones).forEach(([key,item])=>{if(milestoneKeys.has(key))item.syncedAt=syncedAt;});
+        state.analytics.lastSyncAt=syncedAt;state.analytics.lastError=null;await save('analytics');batches++;
+        if(!events.length&&!sessions.length&&!milestones.length)break;
+      }
+      if(showMessage)toast('Wonder Log synced');
+      return true;
+    }catch(error){
+      state.analytics.lastError=error.message||'Wonder Log sync failed';await save('analytics');
+      if(showMessage)toast(state.analytics.lastError);
+      return false;
+    }finally{wonderLogSyncing=false;}
+  }
 
   function openDashboard(){
     const summary=weeklySummary();
@@ -1343,16 +1409,17 @@
     await openDB(); await loadState(); await initBattery(); await refreshBuildVersion();
     if(state.analytics.currentSession){
       const stale=state.analytics.currentSession;
-      state.analytics.sessions.push({id:stale.id,startedAt:stale.startedAt,endedAt:nowISO(),durationMs:Math.min(4*60*60*1000,Math.max(0,Date.now()-new Date(stale.startedAt).getTime())),batteryStart:stale.batteryStart,batteryEnd:batteryInfo?Math.round(batteryInfo.level*100):null,recovered:true});
+      state.analytics.sessions.push({id:stale.id,startedAt:stale.startedAt,endedAt:nowISO(),durationMs:Math.min(4*60*60*1000,Math.max(0,Date.now()-new Date(stale.startedAt).getTime())),batteryStart:stale.batteryStart,batteryEnd:batteryInfo?Math.round(batteryInfo.level*100):null,recovered:true,syncedAt:null});
       state.analytics.currentSession=null;
     }
     startSession();
     if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
-    if(state.device.deviceToken&&navigator.onLine){await syncPictureLibraryFromBackend(false);await syncDrawingQueue(false);}
+    if(state.device.deviceToken&&navigator.onLine){await syncPictureLibraryFromBackend(false);await syncDrawingQueue(false);await syncWonderLog(false);}
     renderActivityOrHome();
     document.addEventListener('visibilitychange',()=>{if(document.hidden)endSession();else resumeSession();});
     window.addEventListener('pagehide',endSession);
-    window.addEventListener('online',()=>{if(state.device.deviceToken){syncPictureLibraryFromBackend(false).catch(()=>{});syncDrawingQueue(false).catch(()=>{});}});
+    window.addEventListener('online',()=>{if(state.device.deviceToken){syncPictureLibraryFromBackend(false).catch(()=>{});syncDrawingQueue(false).catch(()=>{});syncWonderLog(false).catch(()=>{});}});
+    setInterval(()=>{if(state.device.deviceToken&&navigator.onLine)syncWonderLog(false).catch(()=>{});},5*60*1000);
   }
   function renderActivityOrHome(){ const s=activities.some(a=>a.id===state.currentScreen&&!a.disabled)?state.currentScreen:'home'; if(s==='home')renderHome();else renderActivity(s); }
 

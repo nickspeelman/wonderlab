@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-v26.0';
+const CACHE = 'roscoe-wonder-lab-26.1';
 const ASSETS = [
   './', './index.html', './css/styles.css', './js/app.js', './manifest.webmanifest',
   './assets/icons/icon-192.png', './assets/icons/icon-512.png'
