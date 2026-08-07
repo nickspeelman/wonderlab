@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = 8;
-  const BUILD_VERSION = 'v24.0';
+  const BUILD_VERSION = 'v24.1';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -15,6 +15,8 @@
     tapAndMake: { selected:'circle', selectedColor:'red', shapes:[] },
     buttons: { events:[] },
     pictureLab: { instances:[], selectedId:null },
+    timeLab: {},
+    device: { deviceId:null, deviceName:null, deviceToken:null, pairedAt:null, lastSyncAt:null, lastError:null },
     colorLight: { levels:[0,0,0], brightnessLevel:3, spot:{x:.5,y:.5,color:'red'} },
     drawing: { dataUrl:null, tool:'red', brushSize:'medium' },
     drive: { queue:[], rootFolderId:null, drawingsFolderId:null, lastSyncAt:null, lastError:null },
@@ -90,6 +92,7 @@
     }
     // Merge newly added preferences into older installs without losing existing choices.
     state.preferences = {...defaults.preferences, ...(state.preferences || {})};
+    state.device = {...defaults.device, ...(state.device || {})};
     if (Object.prototype.hasOwnProperty.call(state.preferences, 'muted')) {
       state.preferences.soundEffects = !state.preferences.muted;
       delete state.preferences.muted;
@@ -513,6 +516,68 @@
   }
 
   // Picture Lab -------------------------------------------------------------
+
+  const WONDER_BACKEND_URL='https://script.google.com/macros/s/AKfycbwZh5_GFoCC8TcJ6wgpI1ZAoRCKjJ7rJaNlG5bFcFSfljuhZxzpGT6sPselshwbUvBndQ/exec';
+  let wonderJsonpCounter=0;
+
+  function wonderBackend(action,params={}){
+    const callbackName=`__wonderTabletJsonp${++wonderJsonpCounter}`;
+    const url=new URL(WONDER_BACKEND_URL);
+    url.searchParams.set('action',action);url.searchParams.set('callback',callbackName);
+    Object.entries(params).forEach(([key,value])=>{if(value!==undefined&&value!==null)url.searchParams.set(key,String(value))});
+    return new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      const timeout=setTimeout(()=>{cleanup();reject(new Error('Wonder Lab backend request timed out.'))},30000);
+      const cleanup=()=>{clearTimeout(timeout);script.remove();try{delete window[callbackName]}catch{window[callbackName]=undefined}};
+      window[callbackName]=result=>{cleanup();if(result?.ok)resolve(result.payload);else reject(new Error(result?.error||'Wonder Lab backend error.'))};
+      script.onerror=()=>{cleanup();reject(new Error('Could not reach the Wonder Lab backend.'))};
+      script.src=url.toString();document.head.appendChild(script);
+    });
+  }
+
+  function devicePairingStatusText(){
+    if(!state.device.deviceToken)return 'Not paired';
+    if(state.device.lastError)return `Paired · ${state.device.lastError}`;
+    if(state.device.lastSyncAt)return `Paired · synced ${new Date(state.device.lastSyncAt).toLocaleString()}`;
+    return 'Paired · waiting for first sync';
+  }
+
+  async function pairDeviceWithCode(code){
+    if(!navigator.onLine)throw new Error('Connect to Wi-Fi before pairing.');
+    const result=await wonderBackend('claimPairingCode',{code,deviceName:'Roscoe’s Wonder Lab Tablet'});
+    state.device={...state.device,deviceId:result.deviceId,deviceName:result.deviceName,deviceToken:result.deviceToken,pairedAt:result.pairedAt,lastError:null};
+    await save('device');
+    await syncPictureLibraryFromBackend(true);
+    return result;
+  }
+
+  async function syncPictureLibraryFromBackend(showMessage=false){
+    if(!state.device.deviceToken||!navigator.onLine)return false;
+    try{
+      const result=await wonderBackend('devicePictures',{deviceToken:state.device.deviceToken});
+      const pictures=(result.pictures||[]).slice(0,8).map(item=>({pictureId:String(item.pictureId),label:String(item.label||'PICTURE').toUpperCase(),thumbnailDataUrl:String(item.thumbnailDataUrl||''),imageDataUrl:String(item.thumbnailDataUrl||''),updatedAt:String(item.updatedAt||'')})).filter(item=>item.pictureId&&item.thumbnailDataUrl);
+      localStorage.setItem(PICTURE_LIBRARY_KEY,JSON.stringify(pictures));
+      window.WONDER_LAB_PICTURE_LIBRARY=pictures;
+      state.device.lastSyncAt=result.syncedAt||nowISO();state.device.lastError=null;await save('device');
+      if(state.currentScreen==='pictureLab')renderPictureLab();
+      if(showMessage)toast(`${pictures.length} picture${pictures.length===1?'':'s'} synced`);
+      return true;
+    }catch(error){
+      state.device.lastError=error.message||'Picture sync failed';await save('device');
+      if(showMessage)toast(state.device.lastError);
+      return false;
+    }
+  }
+
+  function openDevicePairing(){
+    const bg=document.createElement('div');bg.className='modal-backdrop';bg.innerHTML=`<div class="modal"><h2>Pair this tablet</h2><p>In the Companion, open <strong>Pairing</strong> and generate a code. Enter the 8 digits here.</p><input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="1234 5678"><p class="small-note" id="pairStatus">${escapeHtml(devicePairingStatusText())}</p><div class="modal-actions"><button class="adult-btn" id="cancelPair">Cancel</button><button class="adult-btn primary" id="confirmPair">Pair device</button></div></div>`;document.body.appendChild(bg);
+    const input=bg.querySelector('#pairCode'),status=bg.querySelector('#pairStatus'),confirm=bg.querySelector('#confirmPair');
+    const close=()=>bg.remove();bg.onclick=e=>{if(e.target===bg)close()};bg.querySelector('#cancelPair').onclick=close;
+    input.oninput=()=>{const digits=input.value.replace(/\D/g,'').slice(0,8);input.value=digits.length>4?digits.slice(0,4)+' '+digits.slice(4):digits};
+    confirm.onclick=async()=>{confirm.disabled=true;status.textContent='Pairing…';try{await pairDeviceWithCode(input.value);status.textContent='Paired and synced.';setTimeout(close,650)}catch(error){status.textContent=error.message;confirm.disabled=false}};
+    input.focus();
+  }
+
   const PICTURE_MIN_SCALE=.64;
   const PICTURE_MAX_SCALE=1.60;
   const PICTURE_SCALE_STEP=.16;
@@ -824,6 +889,7 @@
       <div class="settings-row"><span><strong>Export usage data</strong></span><span><button class="adult-btn" id="exportCsv">CSV</button> <button class="adult-btn" id="exportJson">JSON</button></span></div>
       <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save to Drive</button></div>
       <div class="settings-row"><span><strong>Google Drive</strong><br><span class="small-note" id="driveStatus">${driveStatusText()}</span></span><button class="adult-btn" id="syncDrive">${driveAccessToken?'Sync now':'Connect / sync'}</button></div>
+      <div class="settings-row"><span><strong>Device pairing</strong><br><span class="small-note" id="pairingStatus">${devicePairingStatusText()}</span></span><span><button class="adult-btn" id="pairDevice">${state.device.deviceToken?'Pair again':'Pair device'}</button> <button class="adult-btn" id="syncPictures" ${state.device.deviceToken?'':'disabled'}>Sync pictures</button></span></div>
       <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Use this to confirm the tablet received the latest update.</span></span><strong>${BUILD_VERSION}</strong></div>
       <div class="settings-row"><span><strong>Reset this lab</strong></span><button class="adult-btn" id="resetCurrent">Reset</button></div>
       <div class="settings-row"><span><strong>Reset all labs</strong></span><button class="adult-btn danger" id="resetAll">Reset all</button></div>
@@ -839,6 +905,8 @@
     bg.querySelector('#exportJson').onclick=()=>exportUsage('json');
     bg.querySelector('#saveDrive').onclick=async()=>{await queueCurrentDrawing(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=driveStatusText();};
     bg.querySelector('#syncDrive').onclick=async()=>{await authorizeAndSyncDrive();const status=bg.querySelector('#driveStatus');if(status)status.textContent=driveStatusText();};
+    bg.querySelector('#pairDevice').onclick=()=>{close();openDevicePairing();};
+    bg.querySelector('#syncPictures').onclick=async()=>{const button=bg.querySelector('#syncPictures'),status=bg.querySelector('#pairingStatus');button.disabled=true;status.textContent='Syncing pictures…';await syncPictureLibraryFromBackend(true);status.textContent=devicePairingStatusText();button.disabled=!state.device.deviceToken;};
     bg.querySelector('#resetCurrent').onclick=async()=>{close();await resetCurrent(false);};
     bg.querySelector('#resetAll').onclick=()=>confirmResetAll(bg);
   }
@@ -1068,10 +1136,11 @@
     }
     startSession();
     if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    if(state.device.deviceToken&&navigator.onLine) await syncPictureLibraryFromBackend(false);
     renderActivityOrHome();
     document.addEventListener('visibilitychange',()=>{if(document.hidden)endSession();else resumeSession();});
     window.addEventListener('pagehide',endSession);
-    window.addEventListener('online',()=>{if(driveAccessToken&&state.drive.queue.length)syncDriveQueue().catch(()=>{});});
+    window.addEventListener('online',()=>{if(driveAccessToken&&state.drive.queue.length)syncDriveQueue().catch(()=>{});if(state.device.deviceToken)syncPictureLibraryFromBackend(false).catch(()=>{});});
   }
   function renderActivityOrHome(){ const s=activities.some(a=>a.id===state.currentScreen&&!a.disabled)?state.currentScreen:'home'; if(s==='home')renderHome();else renderActivity(s); }
 
