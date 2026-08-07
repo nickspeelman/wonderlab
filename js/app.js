@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = 8;
+  const APP_VERSION = 9;
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -18,6 +18,7 @@
     device: { deviceId:null, deviceName:null, deviceToken:null, pairedAt:null, lastSyncAt:null, lastError:null },
     colorLight: { levels:[0,0,0], brightnessLevel:3, spot:{x:.5,y:.5,color:'red'} },
     drawing: { dataUrl:null, tool:'red', brushSize:'medium' },
+    drawings: { queue:[], lastSyncAt:null, lastError:null },
     drive: { queue:[], rootFolderId:null, drawingsFolderId:null, lastSyncAt:null, lastError:null },
     physics: { selectedColor:'red', objects:[
       {id:'ball1',type:'ball',color:'red',x:.25,y:.88,vx:0,vy:0,angle:0,omega:0},
@@ -134,6 +135,8 @@
     }
     delete state.colorLight.brightness;
     state.drawing={...defaults.drawing,...(state.drawing||{})};
+    state.drawings={...defaults.drawings,...(state.drawings||{})};
+    if(!Array.isArray(state.drawings.queue))state.drawings.queue=[];
     state.tapAndMake={...defaults.tapAndMake,...(state.tapAndMake||{})};
     state.tapAndMake.shapes=(state.tapAndMake.shapes||[]).map(x=>({...x,color:x.color||'red'}));
     state.physics={...defaults.physics,...(state.physics||{})};
@@ -560,6 +563,27 @@
     });
   }
 
+  function tabletRequestId(){
+    const bytes=new Uint8Array(24);crypto.getRandomValues(bytes);
+    return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+  }
+
+  async function sendTabletCommand(action,fields={}){
+    if(!state.device.deviceToken)throw new Error('Pair this tablet with the Companion first.');
+    if(!navigator.onLine)throw new Error('Waiting for internet.');
+    const requestId=tabletRequestId();
+    const body=new URLSearchParams({wlDeviceAction:action,requestId,deviceToken:state.device.deviceToken});
+    Object.entries(fields).forEach(([key,value])=>body.set(key,String(value)));
+    await fetch(WONDER_BACKEND_URL,{method:'POST',mode:'no-cors',body});
+    const deadline=Date.now()+45000;
+    while(Date.now()<deadline){
+      await new Promise(resolve=>setTimeout(resolve,700));
+      const result=await wonderBackend('claimDeviceCommandResult',{requestId,deviceToken:state.device.deviceToken});
+      if(result.status==='complete')return result.payload;
+    }
+    throw new Error('Drawing sync timed out. It may still have completed.');
+  }
+
   function devicePairingStatusText(){
     if(!state.device.deviceToken)return 'Not paired';
     if(state.device.lastError)return `Paired · ${state.device.lastError}`;
@@ -573,6 +597,7 @@
     state.device={...state.device,deviceId:result.deviceId,deviceName:result.deviceName,deviceToken:result.deviceToken,pairedAt:result.pairedAt,lastError:null};
     await save('device');
     await syncPictureLibraryFromBackend(true);
+    await syncDrawingQueue(false);
     return result;
   }
 
@@ -966,7 +991,7 @@
   function renderDrawing(){
     const colors=['red','yellow','blue','black','white','rainbow'];
     const colorButtons=colors.map(c=>`<button class="paint-btn ${c} ${state.drawing.tool===c?'active':''}" data-tool="${c}">${c==='rainbow'?'🌈':''}</button>`).join('');
-    shell('Art Lab',`<div class="activity-wrap"><div class="drawing-layout"><div class="drawing-tools"><div class="paint-grid">${colorButtons}</div><div class="brush-grid" aria-label="Brush sizes"><button class="brush-btn ${state.drawing.brushSize==='small'?'active':''}" data-size="small" aria-label="Small brush"><span class="brush-dot small"></span></button><button class="brush-btn ${state.drawing.brushSize==='medium'?'active':''}" data-size="medium" aria-label="Medium brush"><span class="brush-dot medium"></span></button><button class="brush-btn ${state.drawing.brushSize==='large'?'active':''}" data-size="large" aria-label="Large brush"><span class="brush-dot large"></span></button></div></div><canvas id="drawCanvas" class="draw-canvas"></canvas></div></div>`,true);
+    shell('Art Lab',`<div class="activity-wrap"><div class="drawing-layout"><div class="drawing-tools"><div class="paint-grid">${colorButtons}</div><div class="brush-grid" aria-label="Brush sizes"><button class="brush-btn ${state.drawing.brushSize==='small'?'active':''}" data-size="small" aria-label="Small brush"><span class="brush-dot small"></span></button><button class="brush-btn ${state.drawing.brushSize==='medium'?'active':''}" data-size="medium" aria-label="Medium brush"><span class="brush-dot medium"></span></button><button class="brush-btn ${state.drawing.brushSize==='large'?'active':''}" data-size="large" aria-label="Large brush"><span class="brush-dot large"></span></button></div></div><div class="drawing-canvas-wrap"><canvas id="drawCanvas" class="draw-canvas"></canvas><button id="saveDrawing" class="art-save-btn" aria-label="Save drawing" title="Save drawing">★</button></div></div></div>`,true);
     const canvas=document.getElementById('drawCanvas'),ctx=canvas.getContext('2d',{willReadFrequently:true}); let tool=state.drawing.tool,drawing=false,last=null,hue=0,saveTimer;
     const widths={small:10,medium:22,large:44};
     const ink=()=>tool==='white'?'#fff':tool==='black'?'#111':tool==='rainbow'?`hsl(${hue},90%,55%)`:({red:COLORS[0],yellow:COLORS[1],blue:COLORS[2]})[tool];
@@ -974,6 +999,7 @@
     requestAnimationFrame(resize); window.addEventListener('resize',resize); activeCleanup=()=>window.removeEventListener('resize',resize);
     document.querySelectorAll('.paint-btn').forEach(b=>b.onclick=()=>{ tool=state.drawing.tool=b.dataset.tool; document.querySelectorAll('.paint-btn').forEach(x=>x.classList.toggle('active',x===b)); save('drawing'); logEvent('drawing','tool_selected',{tool}); speak(tool==='white'?'White':tool[0].toUpperCase()+tool.slice(1)); });
     document.querySelectorAll('.brush-btn').forEach(b=>b.onclick=()=>{state.drawing.brushSize=b.dataset.size;document.querySelectorAll('.brush-btn').forEach(x=>x.classList.toggle('active',x===b));save('drawing');speak(`${b.dataset.size} brush`);});
+    document.getElementById('saveDrawing').onclick=async()=>{const button=document.getElementById('saveDrawing');button.disabled=true;try{await queueCurrentDrawing(true);button.classList.add('saved');setTimeout(()=>button?.classList.remove('saved'),700)}finally{if(button?.isConnected)button.disabled=false}};
     const point=e=>{ const r=canvas.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
     canvas.onpointerdown=e=>{drawing=true;last=point(e);canvas.setPointerCapture(e.pointerId);const w=widths[state.drawing.brushSize];ctx.beginPath();ctx.arc(last.x,last.y,w/2,0,Math.PI*2);ctx.fillStyle=ink();ctx.fill();};
     canvas.onpointermove=e=>{ if(!drawing)return; const p=point(e); if(tool==='rainbow')hue=(hue+4)%360;ctx.strokeStyle=ink();ctx.lineWidth=widths[state.drawing.brushSize];ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;clearTimeout(saveTimer);saveTimer=setTimeout(saveDrawingState,350); };
@@ -1130,6 +1156,15 @@
     }
   };
 }
+  function drawingsSyncStatusText(){
+    const queued=state.drawings?.queue?.length||0;
+    if(!state.device.deviceToken)return queued?`${queued} saved locally · pair tablet to sync`:'Pair tablet to sync saved drawings';
+    if(state.drawings?.lastError)return `${queued?`${queued} waiting · `:''}${state.drawings.lastError}`;
+    if(queued)return `${queued} drawing${queued===1?'':'s'} waiting to sync`;
+    if(state.drawings?.lastSyncAt)return `Up to date · last synced ${new Date(state.drawings.lastSyncAt).toLocaleString()}`;
+    return 'Ready to sync saved drawings';
+  }
+
   function openParentControls(){
     const bg=document.createElement('div'); bg.className='modal-backdrop'; bg.innerHTML=`<div class="modal"><h2>Wonder Lab Settings</h2><div class="settings-list">
       <div class="settings-row"><span><strong>Voice responses</strong><br><span class="small-note">Short spoken words describe Roscoe's actions.</span></span><button class="adult-btn" id="voiceBtn">${state.preferences.voiceResponses?'On':'Off'}</button></div>
@@ -1139,8 +1174,8 @@
       <div class="settings-row"><span><strong>Usage insights</strong><br><span class="small-note">Stored only on this tablet.</span></span><button class="adult-btn" id="insightsBtn">${analyticsEnabled()?'On':'Off'}</button></div>
       <div class="settings-row"><span><strong>Engagement dashboard</strong></span><button class="adult-btn" id="dashboardBtn">View</button></div>
       <div class="settings-row"><span><strong>Export usage data</strong></span><span><button class="adult-btn" id="exportCsv">CSV</button> <button class="adult-btn" id="exportJson">JSON</button></span></div>
-      <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save to Drive</button></div>
-      <div class="settings-row"><span><strong>Google Drive</strong><br><span class="small-note" id="driveStatus">${driveStatusText()}</span></span><button class="adult-btn" id="syncDrive">${driveAccessToken?'Sync now':'Connect / sync'}</button></div>
+      <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save</button></div>
+      <div class="settings-row"><span><strong>Saved drawings</strong><br><span class="small-note" id="driveStatus">${drawingsSyncStatusText()}</span></span><button class="adult-btn" id="syncDrive" ${state.device.deviceToken?'':'disabled'}>Sync now</button></div>
       <div class="settings-row"><span><strong>Device pairing</strong><br><span class="small-note" id="pairingStatus">${devicePairingStatusText()}</span></span><span><button class="adult-btn" id="pairDevice">${state.device.deviceToken?'Pair again':'Pair device'}</button> <button class="adult-btn" id="syncPictures" ${state.device.deviceToken?'':'disabled'}>Sync pictures</button></span></div>
       <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Use this to confirm the tablet received the latest update.</span></span><strong id="buildVersionValue">${buildVersion}</strong></div>
       <div class="settings-row"><span><strong>Reset this lab</strong></span><button class="adult-btn" id="resetCurrent">Reset</button></div>
@@ -1156,8 +1191,8 @@
     bg.querySelector('#dashboardBtn').onclick=()=>{close();openDashboard();};
     bg.querySelector('#exportCsv').onclick=()=>exportUsage('csv');
     bg.querySelector('#exportJson').onclick=()=>exportUsage('json');
-    bg.querySelector('#saveDrive').onclick=async()=>{await queueCurrentDrawing(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=driveStatusText();};
-    bg.querySelector('#syncDrive').onclick=async()=>{await authorizeAndSyncDrive();const status=bg.querySelector('#driveStatus');if(status)status.textContent=driveStatusText();};
+    bg.querySelector('#saveDrive').onclick=async()=>{await queueCurrentDrawing(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=drawingsSyncStatusText();};
+    bg.querySelector('#syncDrive').onclick=async()=>{await syncDrawingQueue(true);const status=bg.querySelector('#driveStatus');if(status)status.textContent=drawingsSyncStatusText();};
     bg.querySelector('#pairDevice').onclick=()=>{close();openDevicePairing();};
     bg.querySelector('#syncPictures').onclick=async()=>{const button=bg.querySelector('#syncPictures'),status=bg.querySelector('#pairingStatus');button.disabled=true;status.textContent='Syncing pictures…';await syncPictureLibraryFromBackend(true);status.textContent=devicePairingStatusText();button.disabled=!state.device.deviceToken;};
     bg.querySelector('#resetCurrent').onclick=async()=>{close();await resetCurrent(false);};
@@ -1169,148 +1204,62 @@
     bg.querySelector('#cancel').onclick=()=>bg.remove(); bg.querySelector('#confirm').onclick=async()=>{ if(bg.querySelector('#resetWord').value.trim().toUpperCase()!=='RESET')return; for(const k of activities.map(a=>a.id)){state[k]=clone(defaults[k]);await save(k);} bg.remove();navigate('home');toast('All labs reset'); };
   }
 
-  function drawingBlob(){
-    return new Promise(resolve=>{ if(!state.drawing.dataUrl){resolve(null);return;} fetch(state.drawing.dataUrl).then(r=>r.blob()).then(resolve).catch(()=>resolve(null)); });
-  }
-
-  const driveConfig = () => window.ROSCOE_CONFIG || {};
-  let driveAccessToken = null;
-  let driveTokenExpiresAt = 0;
-  let driveTokenClient = null;
-  let driveSyncing = false;
-  let pendingDriveAuthorization = null;
-
-  function driveConfigured(){
-    const id=driveConfig().GOOGLE_CLIENT_ID||'';
-    return id && !id.startsWith('PASTE-');
-  }
-
-  function driveStatusText(){
-    const queued=state.drive?.queue?.length||0;
-    if(!driveConfigured()) return 'Setup required in js/config.js.';
-    if(driveSyncing) return `Syncing ${queued||''}`.trim();
-    if(state.drive?.lastError) return `${queued?`${queued} waiting. `:''}${state.drive.lastError}`;
-    if(queued) return `${queued} drawing${queued===1?'':'s'} waiting to sync.`;
-    if(state.drive?.lastSyncAt) return `Up to date. Last saved ${new Date(state.drive.lastSyncAt).toLocaleString()}.`;
-    return driveAccessToken?'Connected and ready.':'Ready to connect.';
-  }
-
-  function initDriveTokenClient(){
-    if(driveTokenClient || !driveConfigured() || !window.google?.accounts?.oauth2) return !!driveTokenClient;
-    driveTokenClient=google.accounts.oauth2.initTokenClient({
-      client_id:driveConfig().GOOGLE_CLIENT_ID,
-      scope:'https://www.googleapis.com/auth/drive.file',
-      callback:response=>{
-        if(response.error){
-          state.drive.lastError='Google authorization was not completed.';
-          save('drive').catch(()=>{});
-          pendingDriveAuthorization?.reject(new Error(response.error));
-          pendingDriveAuthorization=null;
-          return;
-        }
-        driveAccessToken=response.access_token;
-        driveTokenExpiresAt=Date.now()+Math.max(0,(response.expires_in||3600)-60)*1000;
-        state.drive.lastError=null;
-        save('drive').catch(()=>{});
-        pendingDriveAuthorization?.resolve(driveAccessToken);
-        pendingDriveAuthorization=null;
-      },
-      error_callback:error=>{
-        state.drive.lastError=error?.type==='popup_closed'?'Drive connection was closed.':'Could not open Google authorization.';
-        save('drive').catch(()=>{});
-        pendingDriveAuthorization?.reject(new Error(state.drive.lastError));
-        pendingDriveAuthorization=null;
-      }
+  async function drawingThumbnailDataUrl(dataUrl){
+    return new Promise((resolve,reject)=>{
+      const image=new Image();
+      image.onload=()=>{
+        const size=260,canvas=document.createElement('canvas');canvas.width=size;canvas.height=size;
+        const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,size,size);
+        const scale=Math.min(size/image.width,size/image.height);
+        const w=image.width*scale,h=image.height*scale;
+        ctx.drawImage(image,(size-w)/2,(size-h)/2,w,h);
+        resolve(canvas.toDataURL('image/jpeg',.72));
+      };
+      image.onerror=()=>reject(new Error('Could not prepare the drawing preview.'));
+      image.src=dataUrl;
     });
-    return true;
-  }
-
-  function requestDriveToken(){
-    if(driveAccessToken && Date.now()<driveTokenExpiresAt) return Promise.resolve(driveAccessToken);
-    if(!driveConfigured()) return Promise.reject(new Error('Google Drive is not configured yet.'));
-    if(!initDriveTokenClient()) return Promise.reject(new Error('Google authorization is still loading. Try again.'));
-    if(pendingDriveAuthorization) return pendingDriveAuthorization.promise;
-    let resolve,reject;
-    const promise=new Promise((res,rej)=>{resolve=res;reject=rej;});
-    pendingDriveAuthorization={promise,resolve,reject};
-    driveTokenClient.requestAccessToken({prompt:''});
-    return promise;
-  }
-
-  async function driveFetch(url,options={}){
-    if(!driveAccessToken || Date.now()>=driveTokenExpiresAt) throw new Error('Drive needs to be reconnected.');
-    const headers=new Headers(options.headers||{});headers.set('Authorization',`Bearer ${driveAccessToken}`);
-    const response=await fetch(url,{...options,headers});
-    if(response.status===401){driveAccessToken=null;driveTokenExpiresAt=0;throw new Error('Drive authorization expired. Tap Connect / sync.');}
-    if(!response.ok){let msg=`Drive error ${response.status}`;try{const j=await response.json();msg=j.error?.message||msg;}catch{}throw new Error(msg);}
-    return response;
-  }
-
-  function escapeDriveQuery(value){return String(value).replaceAll('\\','\\\\').replaceAll("'","\\'");}
-
-  async function findOrCreateDriveFolder(name,parentId=null){
-    const q=[`name='${escapeDriveQuery(name)}'`,`mimeType='application/vnd.google-apps.folder'`,`trashed=false`];
-    if(parentId)q.push(`'${escapeDriveQuery(parentId)}' in parents`);
-    const url=`https://www.googleapis.com/drive/v3/files?spaces=drive&fields=files(id,name)&pageSize=10&q=${encodeURIComponent(q.join(' and '))}`;
-    const found=await (await driveFetch(url)).json();
-    if(found.files?.length)return found.files[0].id;
-    const metadata={name,mimeType:'application/vnd.google-apps.folder'};if(parentId)metadata.parents=[parentId];
-    const created=await (await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id,name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(metadata)})).json();
-    return created.id;
-  }
-
-  async function ensureDriveFolder(){
-    const cfg=driveConfig();
-    if(cfg.DRIVE_FOLDER_ID){state.drive.drawingsFolderId=cfg.DRIVE_FOLDER_ID;await save('drive');return cfg.DRIVE_FOLDER_ID;}
-    if(state.drive.drawingsFolderId)return state.drive.drawingsFolderId;
-    const root=state.drive.rootFolderId||await findOrCreateDriveFolder(cfg.DRIVE_ROOT_FOLDER_NAME||"Roscoe's Wonder Lab");
-    const drawings=await findOrCreateDriveFolder(cfg.DRIVE_DRAWINGS_FOLDER_NAME||'Drawings',root);
-    state.drive.rootFolderId=root;state.drive.drawingsFolderId=drawings;await save('drive');return drawings;
-  }
-
-  async function uploadQueuedDrawing(item,folderId){
-    const blob=await fetch(item.dataUrl).then(r=>r.blob());
-    const boundary=`roscoe_${crypto.randomUUID()}`;
-    const metadata={name:item.filename,mimeType:'image/png',parents:[folderId],description:'Created in Roscoe\'s Wonder Lab'};
-    const body=new Blob([
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
-      `--${boundary}\r\nContent-Type: image/png\r\n\r\n`,blob,`\r\n--${boundary}--`
-    ],{type:`multipart/related; boundary=${boundary}`});
-    return (await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body})).json();
   }
 
   async function queueCurrentDrawing(trySync=false){
     if(state.currentScreen==='drawing')await saveDrawingState();
-    const blob=await drawingBlob();if(!blob){toast('There is no drawing to save yet.');return;}
-    const stamp=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-    const item={id:crypto.randomUUID(),createdAt:nowISO(),filename:`roscoe-wonder-lab-drawing-${stamp}.png`,dataUrl:state.drawing.dataUrl,attempts:0};
-    state.drive.queue.push(item);state.drive.lastError=navigator.onLine?null:'Waiting for internet.';await save('drive');
-    logEvent('drawing','drawing_drive_queued',{offline:!navigator.onLine});toast(navigator.onLine?'Drawing queued for Drive':'Drawing saved; waiting for internet');
-    if(trySync&&navigator.onLine){try{await authorizeAndSyncDrive();}catch{}}
+    if(!state.drawing.dataUrl){toast('Draw something first');return false;}
+    const createdAt=nowISO();
+    const stamp=createdAt.slice(0,19).replace(/[:T]/g,'-');
+    const thumbnailDataUrl=await drawingThumbnailDataUrl(state.drawing.dataUrl);
+    state.drawings.queue.push({
+      id:crypto.randomUUID(),createdAt,
+      fileName:`wonder-lab-drawing-${stamp}`,
+      imageBase64:state.drawing.dataUrl.replace(/^data:image\/png;base64,/,''),
+      thumbnailDataUrl,attempts:0,
+    });
+    state.drawings.lastError=navigator.onLine?(state.device.deviceToken?null:'Pair tablet to sync'):'Waiting for internet';
+    await save('drawings');
+    logEvent('drawing','drawing_saved',{offline:!navigator.onLine,paired:Boolean(state.device.deviceToken)});
+    toast('Drawing saved ★');
+    if(trySync&&navigator.onLine&&state.device.deviceToken)syncDrawingQueue(false).catch(()=>{});
+    return true;
   }
 
-  async function syncDriveQueue(){
-    if(driveSyncing||!navigator.onLine||!state.drive.queue.length)return;
-    if(!driveAccessToken||Date.now()>=driveTokenExpiresAt)throw new Error('Drive needs to be connected.');
-    driveSyncing=true;state.drive.lastError=null;await save('drive');
+  let drawingSyncing=false;
+  async function syncDrawingQueue(showMessage=false){
+    if(drawingSyncing||!navigator.onLine||!state.device.deviceToken||!state.drawings.queue.length)return false;
+    drawingSyncing=true;state.drawings.lastError=null;await save('drawings');
     try{
-      const folderId=await ensureDriveFolder();
-      while(state.drive.queue.length){
-        const item=state.drive.queue[0];item.attempts=(item.attempts||0)+1;await save('drive');
-        const result=await uploadQueuedDrawing(item,folderId);
-        state.drive.queue.shift();state.drive.lastSyncAt=nowISO();state.drive.lastError=null;await save('drive');
-        logEvent('drawing','drawing_drive_saved',{fileId:result.id,filename:result.name});
+      while(state.drawings.queue.length){
+        const item=state.drawings.queue[0];item.attempts=(item.attempts||0)+1;await save('drawings');
+        await sendTabletCommand('uploadDrawing',{
+          createdAt:item.createdAt,fileName:item.fileName,imageBase64:item.imageBase64,thumbnailDataUrl:item.thumbnailDataUrl,
+        });
+        state.drawings.queue.shift();state.drawings.lastSyncAt=nowISO();state.drawings.lastError=null;await save('drawings');
+        logEvent('drawing','drawing_synced',{});
       }
-      toast('Drawing saved to Google Drive');
+      if(showMessage)toast('Drawings synced');
+      return true;
     }catch(error){
-      state.drive.lastError=error.message||'Drive sync failed.';await save('drive');throw error;
-    }finally{driveSyncing=false;}
-  }
-
-  async function authorizeAndSyncDrive(){
-    if(!navigator.onLine){state.drive.lastError='Waiting for internet.';await save('drive');toast('Waiting for internet');return;}
-    try{await requestDriveToken();await syncDriveQueue();if(!state.drive.queue.length)toast('Google Drive is up to date');}
-    catch(error){toast(error.message||'Could not connect to Drive');throw error;}
+      state.drawings.lastError=error.message||'Drawing sync failed';await save('drawings');
+      if(showMessage)toast(state.drawings.lastError);
+      return false;
+    }finally{drawingSyncing=false;}
   }
 
 
@@ -1399,11 +1348,11 @@
     }
     startSession();
     if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
-    if(state.device.deviceToken&&navigator.onLine) await syncPictureLibraryFromBackend(false);
+    if(state.device.deviceToken&&navigator.onLine){await syncPictureLibraryFromBackend(false);await syncDrawingQueue(false);}
     renderActivityOrHome();
     document.addEventListener('visibilitychange',()=>{if(document.hidden)endSession();else resumeSession();});
     window.addEventListener('pagehide',endSession);
-    window.addEventListener('online',()=>{if(driveAccessToken&&state.drive.queue.length)syncDriveQueue().catch(()=>{});if(state.device.deviceToken)syncPictureLibraryFromBackend(false).catch(()=>{});});
+    window.addEventListener('online',()=>{if(state.device.deviceToken){syncPictureLibraryFromBackend(false).catch(()=>{});syncDrawingQueue(false).catch(()=>{});}});
   }
   function renderActivityOrHome(){ const s=activities.some(a=>a.id===state.currentScreen&&!a.disabled)?state.currentScreen:'home'; if(s==='home')renderHome();else renderActivity(s); }
 

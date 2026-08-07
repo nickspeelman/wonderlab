@@ -1,6 +1,6 @@
-const CACHE = 'roscoe-wonder-lab-v25.2';
+const CACHE = 'roscoe-wonder-lab-v26.0';
 const ASSETS = [
-  './', './index.html', './css/styles.css', './js/config.js', './js/app.js', './manifest.webmanifest',
+  './', './index.html', './css/styles.css', './js/app.js', './manifest.webmanifest',
   './assets/icons/icon-192.png', './assets/icons/icon-512.png'
 ];
 self.addEventListener('install', event => {
