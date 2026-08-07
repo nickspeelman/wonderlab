@@ -2,7 +2,6 @@
   'use strict';
 
   const APP_VERSION = 8;
-  const BUILD_VERSION = 'v24.2';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -15,7 +14,7 @@
     tapAndMake: { selected:'circle', selectedColor:'red', shapes:[] },
     buttons: { events:[] },
     pictureLab: { instances:[], selectedId:null },
-    timeLab: {},
+    timeLab: { timestamp:null, step:'hour' },
     device: { deviceId:null, deviceName:null, deviceToken:null, pairedAt:null, lastSyncAt:null, lastError:null },
     colorLight: { levels:[0,0,0], brightnessLevel:3, spot:{x:.5,y:.5,color:'red'} },
     drawing: { dataUrl:null, tool:'red', brushSize:'medium' },
@@ -42,6 +41,26 @@
   let lowPower = false;
   let activeCleanup = () => {};
   let lastTouchSampleAt = 0;
+  let buildVersion = 'Checking…';
+
+  async function refreshBuildVersion(){
+    const prefix='roscoe-wonder-lab-';
+    try{
+      if('caches' in window){
+        const names=await caches.keys();
+        const current=names.find(name=>name.startsWith(prefix));
+        if(current){ buildVersion=current.slice(prefix.length); return buildVersion; }
+      }
+      const response=await fetch('./sw.js',{cache:'no-store'});
+      if(response.ok){
+        const source=await response.text();
+        const match=source.match(/const\s+CACHE\s*=\s*['"]roscoe-wonder-lab-([^'"]+)['"]/);
+        if(match){ buildVersion=match[1]; return buildVersion; }
+      }
+    }catch{}
+    buildVersion='Unknown';
+    return buildVersion;
+  }
 
   const activeLoops = new Map();
   let voiceDucking = false;
@@ -60,6 +79,11 @@
     motion: {
       pickup:'audio/motion/pickup.mp3', drop:'audio/motion/drop.mp3', collision:'audio/motion/collision.mp3',
       bounce:'audio/motion/bounce.mp3', spawn:'audio/motion/spawn.mp3', remove:'audio/motion/remove.mp3'
+    },
+    time: {
+      rooster:'audio/time/rooster.mp3', birds:'audio/time/birds.mp3', bell:'audio/time/bell.mp3', crickets:'audio/time/crickets.mp3',
+      owl:'audio/time/owl.mp3', shootingStar:'audio/time/shooting-star.mp3', leaves:'audio/time/leaves.mp3', winterWind:'audio/time/winter-wind.mp3',
+      trickOrTreat:'audio/time/trick-or-treat.mp3', sleighBells:'audio/time/sleigh-bells.mp3', fireworks:'audio/time/fireworks.mp3', tick:'audio/time/clock-tick.mp3'
     }
   };
 
@@ -93,6 +117,7 @@
     // Merge newly added preferences into older installs without losing existing choices.
     state.preferences = {...defaults.preferences, ...(state.preferences || {})};
     state.device = {...defaults.device, ...(state.device || {})};
+    state.timeLab = {...defaults.timeLab, ...(state.timeLab || {})};
     if (Object.prototype.hasOwnProperty.call(state.preferences, 'muted')) {
       state.preferences.soundEffects = !state.preferences.muted;
       delete state.preferences.muted;
@@ -387,7 +412,7 @@
     {id:'drawing', label:'Art Lab', icon:'🎨', cls:'orange'},
     {id:'physics', label:'Motion Lab', icon:'⚽', cls:'green'},
     {id:'pictureLab', label:'Picture Lab', icon:'🖼️', cls:'purple'},
-    {id:'timeLab', label:'Time Lab', icon:'🕰️', cls:'gray', disabled:true}
+    {id:'timeLab', label:'Time Lab', icon:'🕰️', cls:'gray'}
   ];
 
   async function navigate(screen){
@@ -414,7 +439,7 @@
   }
 
   function renderActivity(id){
-    const map={switchboard:renderSwitchboard,tapAndMake:renderTapAndMake,buttons:renderButtons,colorLight:renderColorLight,drawing:renderDrawing,physics:renderPhysics,pictureLab:renderPictureLab};
+    const map={switchboard:renderSwitchboard,tapAndMake:renderTapAndMake,buttons:renderButtons,colorLight:renderColorLight,drawing:renderDrawing,physics:renderPhysics,pictureLab:renderPictureLab,timeLab:renderTimeLab};
     if(map[id]) map[id](); else renderHome();
   }
 
@@ -680,6 +705,233 @@
 
   window.WonderLabPictureLab=Object.freeze({setLibrary(pictures){const normalized=(Array.isArray(pictures)?pictures:[]).slice(0,8);try{localStorage.setItem(PICTURE_LIBRARY_KEY,JSON.stringify(normalized))}catch{}window.WONDER_LAB_PICTURE_LIBRARY=normalized;if(state.currentScreen==='pictureLab')renderPictureLab()},clear(){state.pictureLab=clone(defaults.pictureLab);save('pictureLab');if(state.currentScreen==='pictureLab')renderPictureLab()}});
 
+  // Time Lab ---------------------------------------------------------------
+  const TIME_STEPS={minute:60000,hour:3600000,day:86400000};
+  const TIME_STEP_LABELS={minute:'MINUTE',hour:'HOUR',day:'DAY',month:'MONTH'};
+  const MOON_PHASES=['🌑','🌒','🌓','🌔','🌕','🌖','🌗','🌘'];
+
+  function timeLabDate(){
+    if(!Number.isFinite(state.timeLab?.timestamp)) state.timeLab.timestamp=Date.now();
+    return new Date(state.timeLab.timestamp);
+  }
+
+  function renderTimeLab(){
+    state.timeLab={...defaults.timeLab,...(state.timeLab||{})};
+    if(!Number.isFinite(state.timeLab.timestamp)) state.timeLab.timestamp=Date.now();
+    const leaves=Array.from({length:28},(_,i)=>`<span class="time-leaf leaf-${i+1}"></span>`).join('');
+    const stars=Array.from({length:18},(_,i)=>`<span class="time-star star-${i+1}">✦</span>`).join('');
+    const numbers=Array.from({length:12},(_,i)=>`<span class="clock-number n${i+1}">${i+1}</span>`).join('');
+    shell('Time Lab',`<div class="activity-wrap"><div class="time-lab">
+      <section class="time-world" id="timeWorld" aria-label="Time landscape">
+        <div class="time-sky" id="timeSky"></div>${stars}
+        <div class="time-sun" id="timeSun">☀️</div><div class="time-moon" id="timeMoon">🌕</div>
+        <div class="holiday-rainbow" id="holidayRainbow"></div>
+        <div class="time-cloud cloud-a">☁️</div><div class="time-cloud cloud-b">☁️</div>
+        <div class="time-birds" id="timeBirds">⌁⌁</div>
+        <div class="time-shooting-star" id="shootingStar">✦</div>
+        <div class="time-santa" id="timeSanta">🛷</div>
+        <div class="time-hearts" id="timeHearts">❤️　💗　❤️</div>
+        <div class="time-fireworks" id="timeFireworks">🎆　🎇</div>
+        <div class="time-ground" id="timeGround"></div>
+        <div class="time-tree" id="timeTree"><div class="tree-trunk"></div><div class="tree-crown">${leaves}</div><div class="tree-owl" id="treeOwl">🦉</div></div>
+        <div class="time-rooster" id="timeRooster">🐓</div>
+        <div class="time-pumpkins" id="timePumpkins">🎃　🎃</div>
+        <div class="time-tricksters" id="timeTricksters">🧙　🦸　👻</div>
+        <div class="time-presents" id="timePresents">🎁　🎁</div>
+      </section>
+      <section class="time-console">
+        <div class="analog-clock" id="analogClock" aria-label="Analog clock">
+          ${numbers}<div class="clock-center"></div>
+          <div class="clock-hand hour-hand" id="hourHand"><span></span></div>
+          <div class="clock-hand minute-hand" id="minuteHand"><span></span></div>
+        </div>
+        <div class="time-readouts">
+          <div class="digital-time" id="digitalTime">12:00 PM</div>
+          <div class="calendar-card"><div class="calendar-month" id="calendarMonth">JANUARY</div><div class="calendar-day" id="calendarDay">1</div><div class="calendar-weekday" id="calendarWeekday">MONDAY</div></div>
+        </div>
+        <div class="time-stepper">
+          <button class="time-jump" id="timeMinus" aria-label="Move backward">−</button>
+          <button class="time-step" id="timeStep" aria-label="Change time step"><span id="timeStepIcon">🕐</span><strong id="timeStepLabel">HOUR</strong></button>
+          <button class="time-jump" id="timePlus" aria-label="Move forward">+</button>
+        </div>
+      </section>
+    </div></div>`,true);
+
+    const clock=document.getElementById('analogClock');
+    document.getElementById('timeMinus').onclick=()=>advanceTime(-1);
+    document.getElementById('timePlus').onclick=()=>advanceTime(1);
+    document.getElementById('timeStep').onclick=()=>cycleTimeStep();
+    bindClockHand(document.getElementById('minuteHand'),'minute',clock);
+    bindClockHand(document.getElementById('hourHand'),'hour',clock);
+    updateTimeLab(true);
+    activeCleanup=()=>{stopLoop('time:crickets');save('timeLab');};
+  }
+
+  function cycleTimeStep(){
+    const order=['minute','hour','day','month'];
+    const idx=order.indexOf(state.timeLab.step);
+    state.timeLab.step=order[(idx+1+order.length)%order.length];
+    save('timeLab');updateTimeLab(true);
+    logEvent('timeLab','step_changed',{step:state.timeLab.step});
+  }
+
+  function advanceTime(direction){
+    const old=timeLabDate();
+    const next=new Date(old);
+    if(state.timeLab.step==='month'){
+      const wantedDay=next.getDate();next.setDate(1);next.setMonth(next.getMonth()+direction);
+      const lastDay=new Date(next.getFullYear(),next.getMonth()+1,0).getDate();next.setDate(Math.min(wantedDay,lastDay));
+    } else next.setTime(next.getTime()+direction*TIME_STEPS[state.timeLab.step]);
+    setTimeLabDate(next,old,'button');
+  }
+
+  function setTimeLabDate(next,previous=null,source='clock'){
+    const old=previous||timeLabDate();
+    state.timeLab.timestamp=next.getTime();
+    updateTimeLab();
+    playTimeTransitions(old,next,false,{source,step:state.timeLab.step});
+    save('timeLab');
+    logEvent('timeLab','time_changed',{source,step:state.timeLab.step,direction:Math.sign(next-old),timestamp:next.toISOString()});
+  }
+
+  function bindClockHand(hand,type,clock){
+    let dragging=false,lastAngle=0,pendingMinutes=0;
+    const angleFor=e=>{const r=clock.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;return Math.atan2(e.clientY-cy,e.clientX-cx);};
+    hand.addEventListener('pointerdown',e=>{dragging=true;lastAngle=angleFor(e);pendingMinutes=0;hand.setPointerCapture(e.pointerId);e.preventDefault();});
+    hand.addEventListener('pointermove',e=>{
+      if(!dragging)return;
+      const angle=angleFor(e);let delta=angle-lastAngle;
+      if(delta>Math.PI)delta-=Math.PI*2;if(delta<-Math.PI)delta+=Math.PI*2;
+      lastAngle=angle;
+      pendingMinutes+=delta/(Math.PI*2)*(type==='minute'?60:720);
+      const whole=pendingMinutes<0?Math.ceil(pendingMinutes):Math.floor(pendingMinutes);
+      if(whole){const old=timeLabDate(),next=new Date(old.getTime()+whole*60000);pendingMinutes-=whole;state.timeLab.timestamp=next.getTime();updateTimeLab();playTimeTransitions(old,next,true,{source:'drag',step:type});}
+      e.preventDefault();
+    });
+    const finish=()=>{if(!dragging)return;dragging=false;save('timeLab');logEvent('timeLab','clock_hand_dragged',{hand:type,timestamp:timeLabDate().toISOString()});};
+    hand.addEventListener('pointerup',finish);hand.addEventListener('pointercancel',finish);
+  }
+
+  function updateTimeLab(silent=false){
+    const d=timeLabDate(),h=d.getHours()+d.getMinutes()/60,month=d.getMonth(),day=d.getDate();
+    const digital=document.getElementById('digitalTime');if(!digital)return;
+    digital.textContent=d.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+    document.getElementById('calendarMonth').textContent=d.toLocaleDateString([], {month:'long'}).toUpperCase();
+    document.getElementById('calendarDay').textContent=day;
+    document.getElementById('calendarWeekday').textContent=d.toLocaleDateString([], {weekday:'long'}).toUpperCase();
+    const minuteAngle=d.getMinutes()*6+d.getSeconds()*.1;
+    const hourAngle=(d.getHours()%12)*30+d.getMinutes()*.5;
+    document.getElementById('minuteHand').style.transform=`rotate(${minuteAngle}deg)`;
+    document.getElementById('hourHand').style.transform=`rotate(${hourAngle}deg)`;
+    const icons={minute:'⏱️',hour:'🕐',day:'☀️',month:'📅'};
+    document.getElementById('timeStepIcon').textContent=icons[state.timeLab.step]||'🕐';
+    document.getElementById('timeStepLabel').textContent=TIME_STEP_LABELS[state.timeLab.step]||'HOUR';
+
+    const world=document.getElementById('timeWorld');
+    world.style.setProperty('--daylight',daylightAmount(h));
+    world.style.setProperty('--season',seasonProgress(d));
+    const sun=document.getElementById('timeSun'),moon=document.getElementById('timeMoon');
+    positionCelestial(sun,(h-6)/12,h>=5.5&&h<=18.5);
+    // The moon's night arc runs east -> west from 6 PM to 6 AM. Keep it
+    // below the horizon through sunset so the pre-6 PM branch cannot clamp
+    // it onto the western horizon beside the setting sun.
+    const moonProgress=h>=18?(h-18)/12:(h+6)/12;
+    positionCelestial(moon,moonProgress,h>=18.75||h<=6.25);
+    moon.textContent=MOON_PHASES[moonPhaseIndex(d)];
+
+    const s=seasonInfo(d);world.dataset.season=s.name;
+    world.style.setProperty('--leaf-opacity',s.leafOpacity);
+    world.style.setProperty('--leaf-hue',s.leafHue);
+    world.style.setProperty('--snow-opacity',s.snowOpacity);
+    document.getElementById('timeBirds').classList.toggle('show',h>=7&&h<17&&s.name!=='winter');
+    document.getElementById('timeRooster').classList.toggle('show',h>=5.75&&h<7);
+    document.getElementById('treeOwl').classList.toggle('show',h>=20.5||h<1);
+    document.getElementById('shootingStar').classList.toggle('show',h>=0&&h<.35);
+
+    const halloween=month===9&&day===31;
+    document.getElementById('timePumpkins').classList.toggle('show',halloween);
+    document.getElementById('timeTricksters').classList.toggle('show',halloween&&h>=17.5&&h<21.5);
+    document.getElementById('timeSanta').classList.toggle('show',month===11&&day===24&&(h>=19||h<1));
+    document.getElementById('timePresents').classList.toggle('show',month===11&&day===25);
+    document.getElementById('timeFireworks').classList.toggle('show',(month===0&&day===1&&h<1)||(month===11&&day===31&&h>=23.8));
+    document.getElementById('timeHearts').classList.toggle('show',month===1&&day===14);
+    document.getElementById('holidayRainbow').classList.toggle('show',month===2&&day===17&&h>=8&&h<18);
+
+    if(state.preferences.soundEffects&&(h>=18.5||h<5.5))startLoop('time:crickets',AUDIO_FILES.time.crickets); else stopLoop('time:crickets');
+    if(!silent) document.getElementById('timeWorld')?.classList.add('time-shift');
+    clearTimeout(updateTimeLab.shiftTimer);updateTimeLab.shiftTimer=setTimeout(()=>document.getElementById('timeWorld')?.classList.remove('time-shift'),180);
+  }
+
+  function daylightAmount(h){
+    if(h>=7&&h<=17)return 1;
+    if(h<5||h>19)return 0;
+    if(h<7)return (h-5)/2;
+    return (19-h)/2;
+  }
+
+  function positionCelestial(el,p,visible){
+    if(!el)return;p=Math.max(0,Math.min(1,p));
+    const x=5+p*90,y=72-Math.sin(p*Math.PI)*58;
+    el.style.left=`${x}%`;el.style.top=`${y}%`;el.classList.toggle('show',visible);
+  }
+
+  function moonPhaseIndex(d){
+    const knownNew=Date.UTC(2000,0,6,18,14),cycle=29.530588853*86400000;
+    const phase=((d.getTime()-knownNew)%cycle+cycle)%cycle/cycle;
+    return Math.floor((phase*8)+.5)%8;
+  }
+
+  function seasonProgress(d){return (Date.UTC(2000,d.getMonth(),d.getDate())-Date.UTC(2000,0,1))/(366*86400000);}
+  function seasonInfo(d){
+    const m=d.getMonth()+d.getDate()/31;
+    if(m<2||m>=11)return {name:'winter',leafOpacity:0,leafHue:95,snowOpacity:.82};
+    if(m<5)return {name:'spring',leafOpacity:Math.min(1,(m-2)/1.7),leafHue:105,snowOpacity:Math.max(0,.6-(m-2)*.8)};
+    if(m<8)return {name:'summer',leafOpacity:1,leafHue:112,snowOpacity:0};
+    if(m<10)return {name:'autumn',leafOpacity:Math.max(.15,1-(m-8)*.28),leafHue:Math.max(10,75-(m-8)*34),snowOpacity:0};
+    return {name:'late-autumn',leafOpacity:Math.max(0,.55-(m-10)*.65),leafHue:18,snowOpacity:Math.max(0,(m-10.7)*1.5)};
+  }
+
+  function crossedHour(a,b,hour){
+    const lo=Math.min(a.getTime(),b.getTime()),hi=Math.max(a.getTime(),b.getTime());
+    const start=new Date(lo);start.setMinutes(0,0,0);start.setHours(hour);
+    if(start.getTime()<=lo)start.setDate(start.getDate()+1);
+    return start.getTime()<=hi;
+  }
+
+  function crossedNewYear(a,b){
+    const lo=Math.min(a,b),hi=Math.max(a,b),y0=new Date(lo).getFullYear(),y1=new Date(hi).getFullYear();
+    for(let y=y0;y<=y1+1;y++){const t=new Date(y,0,1,0,0,0,0).getTime();if(t>lo&&t<=hi)return true;}return false;
+  }
+
+  function playTimeTransitions(oldD,newD,duringDrag=false,context={}){
+    const span=Math.abs(newD-oldD);
+    const source=context.source||'clock';
+    const step=context.step||state.timeLab.step;
+
+    // Day/month jump buttons are calendar navigation, not a fast-forward through
+    // every hour in between. Update the world to the destination silently so a
+    // +DAY click doesn't crow, chime, hoot, etc. all at once.
+    if(source==='button'&&(step==='day'||step==='month'))return;
+
+    // Fine clock manipulation may legitimately cross daily landmarks, but cap
+    // absurd jumps so a single gesture can never dump days of queued sounds.
+    if(span>18*60*60*1000)return;
+
+    if(crossedHour(oldD,newD,6))playNamed('time','rooster',.75);
+    if(crossedHour(oldD,newD,8))playNamed('time','birds',.42);
+    if(crossedHour(oldD,newD,12))playNamed('time','bell',.6);
+    if(crossedHour(oldD,newD,21))playNamed('time','owl',.55);
+    if(crossedHour(oldD,newD,0))playNamed('time','shootingStar',.4);
+    if(crossedNewYear(oldD,newD))playNamed('time','fireworks',.7);
+
+    const n=newD,month=n.getMonth(),day=n.getDate(),h=n.getHours();
+    if(!duringDrag&&oldD.getMonth()!==11&&month===11)playNamed('time','winterWind',.35);
+    if(month===9&&day===31&&h>=17&&h<=21)playNamed('time','trickOrTreat',.48);
+    if(month===11&&day===24&&h>=19)playNamed('time','sleighBells',.62);
+    if(step==='minute'&&!duringDrag)playNamed('time','tick',.35);
+  }
+
+
   function renderColorLight(){
     const spotColors={red:[230,57,70],yellow:[255,210,63],blue:[58,134,255],white:[255,255,255]};
     const spotOrder=['red','yellow','blue','white'];
@@ -890,11 +1142,12 @@
       <div class="settings-row"><span><strong>Current Art Lab drawing</strong><br><span class="small-note">Queues safely when offline.</span></span><button class="adult-btn primary" id="saveDrive">Save to Drive</button></div>
       <div class="settings-row"><span><strong>Google Drive</strong><br><span class="small-note" id="driveStatus">${driveStatusText()}</span></span><button class="adult-btn" id="syncDrive">${driveAccessToken?'Sync now':'Connect / sync'}</button></div>
       <div class="settings-row"><span><strong>Device pairing</strong><br><span class="small-note" id="pairingStatus">${devicePairingStatusText()}</span></span><span><button class="adult-btn" id="pairDevice">${state.device.deviceToken?'Pair again':'Pair device'}</button> <button class="adult-btn" id="syncPictures" ${state.device.deviceToken?'':'disabled'}>Sync pictures</button></span></div>
-      <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Use this to confirm the tablet received the latest update.</span></span><strong>${BUILD_VERSION}</strong></div>
+      <div class="settings-row version-row"><span><strong>Wonder Lab version</strong><br><span class="small-note">Use this to confirm the tablet received the latest update.</span></span><strong id="buildVersionValue">${buildVersion}</strong></div>
       <div class="settings-row"><span><strong>Reset this lab</strong></span><button class="adult-btn" id="resetCurrent">Reset</button></div>
       <div class="settings-row"><span><strong>Reset all labs</strong></span><button class="adult-btn danger" id="resetAll">Reset all</button></div>
     </div><div class="modal-actions"><button class="adult-btn primary" id="doneSettings">Done</button></div></div>`;
     document.body.appendChild(bg); const close=()=>bg.remove(); bg.onclick=e=>{if(e.target===bg)close();}; bg.querySelector('#doneSettings').onclick=close;
+    refreshBuildVersion().then(version=>{const el=bg.querySelector('#buildVersionValue');if(el)el.textContent=version;});
     bg.querySelector('#voiceBtn').onclick=async e=>{state.preferences.voiceResponses=!state.preferences.voiceResponses;e.target.textContent=state.preferences.voiceResponses?'On':'Off';await save('preferences');if(state.preferences.voiceResponses)speak('Voice responses on');};
     bg.querySelector('#effectsBtn').onclick=async e=>{state.preferences.soundEffects=!state.preferences.soundEffects;e.target.textContent=state.preferences.soundEffects?'On':'Off';await save('preferences');if(!state.preferences.soundEffects)stopAllLoops();else{if(state.currentScreen==='switchboard')syncSwitchSounds();playNamed('ui','click',MIX.ui);}};
     bg.querySelector('#volume').oninput=async e=>{state.preferences.volume=+e.target.value;updateLoopVolumes();await save('preferences');};
@@ -1138,7 +1391,7 @@
   }, {capture:true});
 
   async function init(){
-    await openDB(); await loadState(); await initBattery();
+    await openDB(); await loadState(); await initBattery(); await refreshBuildVersion();
     if(state.analytics.currentSession){
       const stale=state.analytics.currentSession;
       state.analytics.sessions.push({id:stale.id,startedAt:stale.startedAt,endedAt:nowISO(),durationMs:Math.min(4*60*60*1000,Math.max(0,Date.now()-new Date(stale.startedAt).getTime())),batteryStart:stale.batteryStart,batteryEnd:batteryInfo?Math.round(batteryInfo.level*100):null,recovered:true});
