@@ -1138,7 +1138,7 @@
 }
   function companionSyncStatusText(){
     const drawingQueue=state.drawings?.queue?.length||0;
-    const logPending=wonderLogPendingCount();
+    const logPending=pendingWonderLogCount();
     if(!state.device.deviceToken)return 'Not paired yet';
     if(state.device.lastError)return state.device.lastError;
     if(state.drawings?.lastError&&drawingQueue)return state.drawings.lastError;
