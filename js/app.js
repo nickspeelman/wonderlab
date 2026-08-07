@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = 8;
-  const BUILD_VERSION = 'v23.2';
+  const BUILD_VERSION = 'v24.0';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -14,6 +14,7 @@
     switchboard: { light:false, rain:false, stars:false, bubbles:false, train:false, wind:false, snow:false, lightning:false, rainbow:false },
     tapAndMake: { selected:'circle', selectedColor:'red', shapes:[] },
     buttons: { events:[] },
+    pictureLab: { instances:[], selectedId:null },
     colorLight: { levels:[0,0,0], brightnessLevel:3, spot:{x:.5,y:.5,color:'red'} },
     drawing: { dataUrl:null, tool:'red', brushSize:'medium' },
     drive: { queue:[], rootFolderId:null, drawingsFolderId:null, lastSyncAt:null, lastError:null },
@@ -381,7 +382,9 @@
     {id:'buttons', label:'Action Lab', icon:'🔴', cls:'blue'},
     {id:'colorLight', label:'Color Lab', icon:'🌈', cls:'white'},
     {id:'drawing', label:'Art Lab', icon:'🎨', cls:'orange'},
-    {id:'physics', label:'Motion Lab', icon:'⚽', cls:'green'}
+    {id:'physics', label:'Motion Lab', icon:'⚽', cls:'green'},
+    {id:'pictureLab', label:'Picture Lab', icon:'🖼️', cls:'purple'},
+    {id:'timeLab', label:'Time Lab', icon:'🕰️', cls:'gray', disabled:true}
   ];
 
   async function navigate(screen){
@@ -402,14 +405,14 @@
   }
 
   function renderHome(){
-    const tiles=activities.map(a=>`<button class="tile ${a.cls}" data-screen="${a.id}"><span class="tile-icon">${a.icon}</span><span class="tile-label">${a.label}</span></button>`).join('');
+    const tiles=activities.map(a=>`<button class="tile ${a.cls}${a.disabled?' coming-soon':''}" data-screen="${a.id}" ${a.disabled?'disabled aria-disabled="true"':''}><span class="tile-icon">${a.icon}</span><span class="tile-label">${a.label}</span>${a.disabled?'<span class="tile-note">COMING SOON</span>':''}</button>`).join('');
     shell("Roscoe's Wonder Lab", `<div class="home-grid">${tiles}</div>`);
-    document.querySelectorAll('.tile').forEach(btn=>btn.onclick=()=>{ speak(activityLabel(btn.dataset.screen)); navigate(btn.dataset.screen); });
+    document.querySelectorAll('.tile:not(:disabled)').forEach(btn=>btn.onclick=()=>{ speak(activityLabel(btn.dataset.screen)); navigate(btn.dataset.screen); });
   }
 
   function renderActivity(id){
-    const map={switchboard:renderSwitchboard,tapAndMake:renderTapAndMake,buttons:renderButtons,colorLight:renderColorLight,drawing:renderDrawing,physics:renderPhysics};
-    map[id]();
+    const map={switchboard:renderSwitchboard,tapAndMake:renderTapAndMake,buttons:renderButtons,colorLight:renderColorLight,drawing:renderDrawing,physics:renderPhysics,pictureLab:renderPictureLab};
+    if(map[id]) map[id](); else renderHome();
   }
 
   function stopAllSwitchSounds(){
@@ -508,6 +511,110 @@
     const out=target.map((v,i)=>Math.round(base[i]*(1-strength)+v*strength));
     return `rgb(${out.join(',')})`;
   }
+
+  // Picture Lab -------------------------------------------------------------
+  const PICTURE_MIN_SCALE=.64;
+  const PICTURE_MAX_SCALE=1.60;
+  const PICTURE_SCALE_STEP=.16;
+  const PICTURE_BIG_AT=1.20;
+  const PICTURE_SMALL_AT=.80;
+  const PICTURE_BASE_RADIUS=48;
+  const PICTURE_HIT_SLOP=24;
+  const PICTURE_HOLD_DELAY=440;
+  const PICTURE_HOLD_TICK=85;
+  const PICTURE_TAP_MOVE=14;
+  const PICTURE_LIBRARY_KEY='wonderLabPictureLibrary';
+
+  function pictureLibrary(){
+    const source=Array.isArray(window.WONDER_LAB_PICTURE_LIBRARY)?window.WONDER_LAB_PICTURE_LIBRARY:(()=>{try{return JSON.parse(localStorage.getItem(PICTURE_LIBRARY_KEY)||'[]')}catch{return []}})();
+    if(!Array.isArray(source))return [];
+    return source.slice(0,8).map((item,i)=>({
+      pictureId:String(item.pictureId||item.id||`picture-${i}`),
+      label:String(item.label||'PICTURE').trim().toUpperCase(),
+      src:item.imageDataUrl||item.thumbnailDataUrl||item.thumbnail||item.url||''
+    })).filter(item=>item.src);
+  }
+
+  function renderPictureLab(){
+    const library=pictureLibrary();
+    const shelf=library.length?library.map(item=>`<button class="picture-source" data-picture-id="${escapeHtml(item.pictureId)}" aria-label="Add ${escapeHtml(item.label)}"><img src="${escapeHtml(item.src)}" alt="${escapeHtml(item.label)}" draggable="false"></button>`).join(''):'<div class="picture-empty">No synced pictures yet.</div>';
+    shell('Picture Lab',`<div class="activity-wrap"><div class="picture-lab"><div class="picture-playfield" id="picturePlayfield"><div class="picture-container" id="pictureContainer"><span class="picture-container-label">IN</span></div><span class="picture-out-label">OUT</span></div><aside class="picture-side"><div class="picture-shelf-title">PICTURES</div><div class="picture-shelf">${shelf}</div><div class="picture-size-controls"><button class="picture-size-btn" id="pictureMinus" aria-label="Make picture smaller">−</button><button class="picture-size-btn" id="picturePlus" aria-label="Make picture bigger">+</button></div><div class="picture-help" id="pictureHelp">Tap a picture to add it.</div></aside></div></div>`,true);
+    const field=document.getElementById('picturePlayfield');
+    document.querySelectorAll('.picture-source').forEach(btn=>btn.onclick=()=>{const item=library.find(x=>x.pictureId===btn.dataset.pictureId);if(item)spawnPicture(item)});
+    document.getElementById('pictureMinus').onclick=()=>resizePicture(-PICTURE_SCALE_STEP);
+    document.getElementById('picturePlus').onclick=()=>resizePicture(PICTURE_SCALE_STEP);
+    field.onpointerdown=picturePointerDown;
+    renderPictureInstances();
+    activeCleanup=()=>save('pictureLab');
+  }
+
+  function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  const pictureClamp=(v,min,max)=>max<min?(min+max)/2:Math.max(min,Math.min(max,v));
+  const pictureRound=v=>Math.round(v*1000)/1000;
+
+  function spawnPicture(item){
+    const field=document.getElementById('picturePlayfield'),box=document.getElementById('pictureContainer');if(!field||!box)return;
+    const fr=field.getBoundingClientRect(),br=box.getBoundingClientRect(),n=state.pictureLab.instances.length;
+    const instance={id:crypto.randomUUID(),pictureId:item.pictureId,label:item.label,src:item.src,x:br.left-fr.left+br.width/2+((n%3)-1)*Math.min(76,br.width*.18),y:br.top-fr.top+br.height/2+((Math.floor(n/3)%3)-1)*Math.min(58,br.height*.15),scale:1,containment:'in'};
+    state.pictureLab.instances.push(instance);state.pictureLab.selectedId=instance.id;snapPicture(instance,'in');save('pictureLab');renderPictureInstances();speakPicture(instance);logEvent('pictureLab','picture_spawned',{pictureId:item.pictureId,label:item.label});
+  }
+
+  function renderPictureInstances(){
+    const field=document.getElementById('picturePlayfield');if(!field)return;
+    field.querySelectorAll('.picture-object').forEach(el=>el.remove());
+    state.pictureLab.instances.forEach(item=>{const img=document.createElement('img');img.className='picture-object'+(item.id===state.pictureLab.selectedId?' selected':'');img.dataset.instanceId=item.id;img.src=item.src;img.alt=item.label;img.draggable=false;img.style.left=`${item.x}px`;img.style.top=`${item.y}px`;img.style.setProperty('--picture-scale',item.scale);field.appendChild(img)});
+    updatePictureControls();
+  }
+
+  function selectedPicture(){return state.pictureLab.instances.find(x=>x.id===state.pictureLab.selectedId)||null}
+  function selectPicture(item){state.pictureLab.selectedId=item.id;document.querySelectorAll('.picture-object').forEach(el=>el.classList.toggle('selected',el.dataset.instanceId===item.id));save('pictureLab');updatePictureControls()}
+
+  function resizePicture(delta){
+    const item=selectedPicture();if(!item)return;
+    item.scale=pictureClamp(pictureRound(item.scale+delta),PICTURE_MIN_SCALE,PICTURE_MAX_SCALE);snapPicture(item,item.containment);syncPictureElement(item);save('pictureLab');updatePictureControls();speakPicture(item);logEvent('pictureLab','picture_resized',{label:item.label,scale:item.scale});
+  }
+
+  function updatePictureControls(){
+    const minus=document.getElementById('pictureMinus'),plus=document.getElementById('picturePlus'),help=document.getElementById('pictureHelp');if(!minus||!plus)return;
+    const item=selectedPicture();minus.disabled=!item||item.scale<=PICTURE_MIN_SCALE+.001;plus.disabled=!item||item.scale>=PICTURE_MAX_SCALE-.001;
+    if(help)help.textContent=item?`${pictureSizeWord(item)} ${item.label} • ${item.containment.toUpperCase()}`.trim():'Tap a picture to add it.';
+  }
+
+  function pictureSizeWord(item){return item.scale>=PICTURE_BIG_AT?'BIG':item.scale<=PICTURE_SMALL_AT?'SMALL':''}
+  function speakPicture(item){const words=[pictureSizeWord(item).toLowerCase(),String(item.label||'picture').toLowerCase(),item.containment==='in'?'in':'out'].filter(Boolean);speak(words.join(' '));updatePictureControls()}
+
+  function pictureHit(clientX,clientY){
+    const field=document.getElementById('picturePlayfield');if(!field)return null;const r=field.getBoundingClientRect(),x=clientX-r.left,y=clientY-r.top;
+    for(const slop of [0,PICTURE_HIT_SLOP]){let best=null,bestD=Infinity;for(const item of [...state.pictureLab.instances].reverse()){const d=Math.hypot(x-item.x,y-item.y),radius=PICTURE_BASE_RADIUS*item.scale+slop;if(d<=radius&&d<bestD){best=item;bestD=d}}if(best)return best}return null;
+  }
+
+  function picturePointerDown(e){
+    const item=pictureHit(e.clientX,e.clientY);if(!item)return;e.preventDefault();selectPicture(item);
+    const field=document.getElementById('picturePlayfield'),el=field.querySelector(`[data-instance-id="${CSS.escape(item.id)}"]`),fr=field.getBoundingClientRect();if(!el)return;
+    const start={id:e.pointerId,x:e.clientX,y:e.clientY,itemX:item.x,itemY:item.y,moved:false,holding:false,direction:1,timer:null,interval:null};el.classList.add('dragging');field.setPointerCapture?.(e.pointerId);
+    start.timer=setTimeout(()=>{if(start.moved)return;start.holding=true;start.interval=setInterval(()=>{item.scale=pictureRound(item.scale+.045*start.direction);if(item.scale>=PICTURE_MAX_SCALE){item.scale=PICTURE_MAX_SCALE;start.direction=-1}else if(item.scale<=PICTURE_MIN_SCALE){item.scale=PICTURE_MIN_SCALE;start.direction=1}el.style.setProperty('--picture-scale',item.scale);updatePictureControls()},PICTURE_HOLD_TICK)},PICTURE_HOLD_DELAY);
+    const move=ev=>{if(ev.pointerId!==start.id)return;const dx=ev.clientX-start.x,dy=ev.clientY-start.y;if(!start.moved&&Math.hypot(dx,dy)>PICTURE_TAP_MOVE){start.moved=true;clearTimeout(start.timer)}if(start.holding)return;item.x=pictureClamp(start.itemX+dx,0,fr.width);item.y=pictureClamp(start.itemY+dy,0,fr.height);el.style.left=`${item.x}px`;el.style.top=`${item.y}px`};
+    const finish=ev=>{if(ev.pointerId!==start.id)return;clearTimeout(start.timer);clearInterval(start.interval);field.removeEventListener('pointermove',move);field.removeEventListener('pointerup',finish);field.removeEventListener('pointercancel',finish);el.classList.remove('dragging');if(start.holding){snapPicture(item,item.containment);syncPictureElement(item);save('pictureLab');speakPicture(item);return}if(!start.moved){speakPicture(item);return}resolvePictureContainment(item);syncPictureElement(item);save('pictureLab');speakPicture(item);logEvent('pictureLab','picture_moved',{label:item.label,containment:item.containment})};
+    field.addEventListener('pointermove',move);field.addEventListener('pointerup',finish);field.addEventListener('pointercancel',finish);
+  }
+
+  function resolvePictureContainment(item){
+    const field=document.getElementById('picturePlayfield'),box=document.getElementById('pictureContainer');if(!field||!box)return;const fr=field.getBoundingClientRect(),br=box.getBoundingClientRect(),bx=br.left-fr.left,by=br.top-fr.top,r=PICTURE_BASE_RADIUS*item.scale,enter=Math.min(36,r*.45),exit=Math.min(34,r*.38);let target=item.containment;
+    if(item.containment==='out'){if(item.x>bx+enter&&item.x<bx+br.width-enter&&item.y>by+enter&&item.y<by+br.height-enter)target='in'}else if(item.x<bx-exit||item.x>bx+br.width+exit||item.y<by-exit||item.y>by+br.height+exit)target='out';
+    snapPicture(item,target);
+  }
+
+  function snapPicture(item,target){
+    const field=document.getElementById('picturePlayfield'),box=document.getElementById('pictureContainer');if(!field||!box)return;const fr=field.getBoundingClientRect(),br=box.getBoundingClientRect(),bx=br.left-fr.left,by=br.top-fr.top,r=PICTURE_BASE_RADIUS*item.scale,gap=8;
+    if(target==='in'){item.containment='in';item.x=pictureClamp(item.x,bx+r+gap,bx+br.width-r-gap);item.y=pictureClamp(item.y,by+r+gap,by+br.height-r-gap);return}
+    item.containment='out';const sides=[['left',Math.abs(item.x-bx)],['right',Math.abs(item.x-(bx+br.width))],['top',Math.abs(item.y-by)],['bottom',Math.abs(item.y-(by+br.height))]].sort((a,b)=>a[1]-b[1]);
+    for(const [side] of sides){let x=item.x,y=item.y;if(side==='left')x=bx-r-gap;if(side==='right')x=bx+br.width+r+gap;if(side==='top')y=by-r-gap;if(side==='bottom')y=by+br.height+r+gap;x=pictureClamp(x,r+4,fr.width-r-4);y=pictureClamp(y,r+4,fr.height-r-4);const overlaps=x+r>bx&&x-r<bx+br.width&&y+r>by&&y-r<by+br.height;if(!overlaps){item.x=x;item.y=y;return}}
+  }
+
+  function syncPictureElement(item){const el=document.querySelector(`.picture-object[data-instance-id="${CSS.escape(item.id)}"]`);if(!el)return;el.style.left=`${item.x}px`;el.style.top=`${item.y}px`;el.style.setProperty('--picture-scale',item.scale)}
+
+  window.WonderLabPictureLab=Object.freeze({setLibrary(pictures){const normalized=(Array.isArray(pictures)?pictures:[]).slice(0,8);try{localStorage.setItem(PICTURE_LIBRARY_KEY,JSON.stringify(normalized))}catch{}window.WONDER_LAB_PICTURE_LIBRARY=normalized;if(state.currentScreen==='pictureLab')renderPictureLab()},clear(){state.pictureLab=clone(defaults.pictureLab);save('pictureLab');if(state.currentScreen==='pictureLab')renderPictureLab()}});
+
   function renderColorLight(){
     const spotColors={red:[230,57,70],yellow:[255,210,63],blue:[58,134,255],white:[255,255,255]};
     const spotOrder=['red','yellow','blue','white'];
@@ -931,6 +1038,15 @@
     document.body.appendChild(bg);bg.querySelector('#cancelErase').onclick=()=>bg.remove();bg.querySelector('#confirmErase').onclick=async()=>{if(bg.querySelector('#eraseWord').value.trim().toUpperCase()!=='ERASE')return;state.analytics=clone(defaults.analytics);await save('analytics');startSession();bg.remove();toast('Usage history erased');};
   }
 
+  // A small global margin for near-missed touch/button presses. Mouse input is unchanged.
+  let forgivingTouchStart=null;
+  document.addEventListener('pointerdown',e=>{if(e.pointerType==='mouse')return;forgivingTouchStart={id:e.pointerId,x:e.clientX,y:e.clientY,target:e.target}},true);
+  document.addEventListener('pointerup',e=>{
+    const start=forgivingTouchStart;forgivingTouchStart=null;if(!start||start.id!==e.pointerId||e.pointerType==='mouse')return;
+    if(Math.hypot(e.clientX-start.x,e.clientY-start.y)>14||e.target.closest('button,input,select,textarea,label,.picture-playfield'))return;
+    let best=null,bestD=Infinity;document.querySelectorAll('button:not(:disabled)').forEach(btn=>{const r=btn.getBoundingClientRect(),style=getComputedStyle(btn);if(!r.width||!r.height||style.display==='none'||style.visibility==='hidden')return;const dx=e.clientX<r.left?r.left-e.clientX:e.clientX>r.right?e.clientX-r.right:0,dy=e.clientY<r.top?r.top-e.clientY:e.clientY>r.bottom?e.clientY-r.bottom:0,d=Math.hypot(dx,dy);if(d<=14&&d<bestD){best=btn;bestD=d}});if(best){e.preventDefault();best.click()}
+  },true);
+
   let batteryInfo=null;
   async function initBattery(){
     if(!navigator.getBattery)return;
@@ -957,7 +1073,7 @@
     window.addEventListener('pagehide',endSession);
     window.addEventListener('online',()=>{if(driveAccessToken&&state.drive.queue.length)syncDriveQueue().catch(()=>{});});
   }
-  function renderActivityOrHome(){ const s=activities.some(a=>a.id===state.currentScreen)?state.currentScreen:'home'; if(s==='home')renderHome();else renderActivity(s); }
+  function renderActivityOrHome(){ const s=activities.some(a=>a.id===state.currentScreen&&!a.disabled)?state.currentScreen:'home'; if(s==='home')renderHome();else renderActivity(s); }
 
   init().catch(err=>{ console.error(err); renderHome(); });
 })();
