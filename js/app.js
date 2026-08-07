@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = 8;
-  const BUILD_VERSION = 'v21';
+  const BUILD_VERSION = 'v22';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
@@ -655,12 +655,57 @@
   }
 
   function openParentGate(){
-    const bg=document.createElement('div'); bgclassName='modal-backdrop'; bg.innerHTML=`<div class="modal"><h2>Wonder Lab Settings</h2><p>Type <strong>ENTER</strong> to continue.</p><input id="gateInput" autocomplete="off" inputmode="text" aria-label="Type ENTER"><div class="modal-actions"><button class="adult-btn" id="cancelGate">Cancel</button><button class="adult-btn primary" id="enterGate">Continue</button></div></div>`;
-    document.body.appendChild(bg); const input=bg.querySelector('#gateInput'); input.focus();
-    const close=()=>bg.remove(); bg.onclick=e=>{if(e.target===bg)close();}; bg.querySelector('#cancelGate').onclick=close; bg.querySelector('#enterGate').onclick=()=>{ if(input.value.trim().toUpperCase()==='ENTER'){close();openParentControls();} else {input.value='';input.placeholder='Please type ENTER';} };
-    input.onkeydown=e=>{if(e.key==='Enter')bg.querySelector('#enterGate').click();};
-  }
+  const bg = document.createElement('div');
+  bg.className = 'modal-backdrop';
 
+  bg.innerHTML = `
+    <div class="modal">
+      <h2>Wonder Lab Settings</h2>
+      <p>Type <strong>ENTER</strong> to continue.</p>
+
+      <input
+        id="gateInput"
+        autocomplete="off"
+        inputmode="text"
+        aria-label="Type ENTER"
+      >
+
+      <div class="modal-actions">
+        <button class="adult-btn" id="cancelGate">Cancel</button>
+        <button class="adult-btn primary" id="enterGate">Continue</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(bg);
+
+  const input = bg.querySelector('#gateInput');
+  input.focus();
+
+  const close = () => bg.remove();
+
+  bg.onclick = event => {
+    if (event.target === bg) close();
+  };
+
+  bg.querySelector('#cancelGate').onclick = close;
+
+  bg.querySelector('#enterGate').onclick = () => {
+    if (input.value.trim().toUpperCase() === 'ENTER') {
+      close();
+      openParentControls();
+    } else {
+      input.value = '';
+      input.placeholder = 'Please type ENTER';
+    }
+  };
+
+  input.onkeydown = event => {
+    if (event.key === 'Enter') {
+      bg.querySelector('#enterGate').click();
+    }
+  };
+}
   function openParentControls(){
     const bg=document.createElement('div'); bg.className='modal-backdrop'; bg.innerHTML=`<div class="modal"><h2>Wonder Lab Settings</h2><div class="settings-list">
       <div class="settings-row"><span><strong>Voice responses</strong><br><span class="small-note">Short spoken words describe Roscoe's actions.</span></span><button class="adult-btn" id="voiceBtn">${state.preferences.voiceResponses?'On':'Off'}</button></div>
