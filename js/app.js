@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = 8;
-  const BUILD_VERSION = 'v22';
+  const BUILD_VERSION = 'v23';
   const DB_NAME = 'roscoes-playground';
   const STORE = 'state';
   const COLORS = ['#e63946', '#ffd23f', '#3a86ff'];
