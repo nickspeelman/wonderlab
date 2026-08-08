@@ -86,7 +86,7 @@
     },
     time: {
       rooster:'audio/time/rooster.mp3', birds:'audio/time/birds.mp3', bell:'audio/time/bell.mp3', crickets:'audio/time/crickets.mp3',
-      owl:'audio/time/owl.mp3', shootingStar:'audio/time/shooting-star.mp3', leaves:'audio/time/leaves.mp3', winterWind:'audio/time/winter-wind.mp3',
+      owl:'audio/time/owl.mp3', leaves:'audio/time/leaves.mp3', winterWind:'audio/time/winter-wind.mp3',
       trickOrTreat:'audio/time/trick-or-treat.mp3', sleighBells:'audio/time/sleigh-bells.mp3', fireworks:'audio/time/fireworks.mp3', tick:'audio/time/clock-tick.mp3'
     }
   };
@@ -748,7 +748,6 @@
         <div class="time-sun" id="timeSun">☀️</div><div class="time-moon" id="timeMoon">🌕</div>
         <div class="holiday-rainbow" id="holidayRainbow"></div>
         <div class="time-cloud cloud-a">☁️</div><div class="time-cloud cloud-b">☁️</div>
-        <div class="time-shooting-star" id="shootingStar">✦</div>
         <img class="time-santa" id="timeSanta" src="assets/images/santa.png" alt="" aria-hidden="true" />
         <div class="time-hearts" id="timeHearts">❤️　💗　❤️</div>
         <div class="time-fireworks" id="timeFireworks">🎆　🎇</div>
@@ -865,7 +864,6 @@
     world.style.setProperty('--snow-opacity',s.snowOpacity);
     document.getElementById('timeRooster').classList.toggle('show',h>=5.75&&h<7);
     document.getElementById('treeOwl').classList.toggle('show',h>=20.5||h<1);
-    document.getElementById('shootingStar').classList.toggle('show',h>=0&&h<.35);
 
     const halloween=month===9&&day===31;
     document.getElementById('timePumpkins').classList.toggle('show',halloween);
@@ -940,7 +938,6 @@
     if(crossedHour(oldD,newD,8))playNamed('time','birds',.42);
     if(crossedHour(oldD,newD,12))playNamed('time','bell',.6);
     if(crossedHour(oldD,newD,21))playNamed('time','owl',.55);
-    if(crossedHour(oldD,newD,0))playNamed('time','shootingStar',.4);
     if(crossedNewYear(oldD,newD))playNamed('time','fireworks',.7);
 
     const n=newD,month=n.getMonth(),day=n.getDate(),h=n.getHours();
