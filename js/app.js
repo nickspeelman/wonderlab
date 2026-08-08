@@ -268,6 +268,10 @@
 
   function masterVolume(){ return Math.max(0,Math.min(1,+state.preferences.volume||0)); }
 
+  function logAudioFailure(kind,path,error){
+    console.warn(`[Wonder Lab audio] ${kind} failed for ${path}`, error || 'Unknown media error');
+  }
+
   function oneShot(path, relativeVolume=.5, playbackRate=1){
     if(!state.preferences.soundEffects || !path) return null;
     try{
@@ -275,9 +279,14 @@
       a.preload='auto';
       a.volume=Math.min(1,masterVolume()*relativeVolume);
       a.playbackRate=playbackRate;
-      a.play().catch(()=>{});
+      a.addEventListener('error',()=>logAudioFailure('load',path,a.error),{once:true});
+      const playPromise=a.play();
+      if(playPromise?.catch) playPromise.catch(error=>logAudioFailure('play',path,error));
       return a;
-    }catch{return null;}
+    }catch(error){
+      logAudioFailure('setup',path,error);
+      return null;
+    }
   }
 
   function playNamed(group,name,relativeVolume){
@@ -301,8 +310,19 @@
     if(!state.preferences.soundEffects || !path || activeLoops.has(key)) return;
     try{
       const a=new Audio(path);a.loop=true;a.preload='auto';a.volume=0;
-      activeLoops.set(key,a);updateLoopVolumes();a.play().catch(()=>{});
-    }catch{}
+      a.addEventListener('error',()=>{
+        logAudioFailure('load',path,a.error);
+        if(activeLoops.get(key)===a) activeLoops.delete(key);
+      },{once:true});
+      activeLoops.set(key,a);updateLoopVolumes();
+      const playPromise=a.play();
+      if(playPromise?.catch) playPromise.catch(error=>{
+        logAudioFailure('play',path,error);
+        if(activeLoops.get(key)===a) activeLoops.delete(key);
+      });
+    }catch(error){
+      logAudioFailure('setup',path,error);
+    }
   }
 
   function stopLoop(key){

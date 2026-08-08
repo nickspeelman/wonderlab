@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.5';
+const CACHE = 'roscoe-wonder-lab-26.6';
 
 const ASSETS = [
   './',
@@ -8,7 +8,39 @@ const ASSETS = [
   './manifest.webmanifest',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
-  './assets/companion-qr.png'
+  './assets/companion-qr.png',
+  './audio/ui/broom.mp3',
+  './audio/ui/click.mp3',
+  './audio/ui/home.mp3',
+  './audio/ui/pop.mp3',
+  './audio/ui/toggle.mp3',
+  './audio/switches/bubbles.mp3',
+  './audio/switches/light.mp3',
+  './audio/switches/lightning.mp3',
+  './audio/switches/rain.mp3',
+  './audio/switches/rainbow.mp3',
+  './audio/switches/snow.mp3',
+  './audio/switches/stars.mp3',
+  './audio/switches/train.mp3',
+  './audio/switches/wind.mp3',
+  './audio/motion/bounce.mp3',
+  './audio/motion/collision.mp3',
+  './audio/motion/drop.mp3',
+  './audio/motion/pickup.mp3',
+  './audio/motion/remove.mp3',
+  './audio/motion/spawn.mp3',
+  './audio/time/bell.mp3',
+  './audio/time/birds.mp3',
+  './audio/time/clock-tick.mp3',
+  './audio/time/crickets.mp3',
+  './audio/time/fireworks.mp3',
+  './audio/time/leaves.mp3',
+  './audio/time/owl.mp3',
+  './audio/time/rooster.mp3',
+  './audio/time/shooting-star.mp3',
+  './audio/time/sleigh-bells.mp3',
+  './audio/time/trick-or-treat.mp3',
+  './audio/time/winter-wind.mp3'
 ];
 
 const CORE_PATHS = new Set([
