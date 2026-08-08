@@ -346,7 +346,7 @@
           <div class="brand">${title}</div>
           <div></div>
           <div class="top-actions">
-            <div id="battery" class="battery" aria-label="Low battery"><span class="battery-plug">🔌</span><div class="battery-fill"></div></div>
+            <div id="battery" class="battery" aria-label="Low battery"><span class="battery-charge-icon" aria-hidden="true">⚡</span><div class="battery-fill"></div></div>
             <button class="icon-btn" id="parentBtn" aria-label="Wonder Lab settings">⚙️</button>
           </div>
         </header>
@@ -1336,8 +1336,13 @@
   function updateBatteryUI(){
     const el=document.getElementById('battery'); if(!el||!batteryInfo)return;
     const pct=Math.round(batteryInfo.level*100),fill=el.querySelector('.battery-fill'); fill.style.width=`${pct}%`;
-    el.classList.toggle('low',pct<=20||batteryInfo.charging);el.classList.toggle('critical',pct<=10&&!batteryInfo.charging);el.classList.toggle('very-low',pct<=5&&!batteryInfo.charging);el.classList.toggle('charging',batteryInfo.charging);
-    fill.style.background=pct<=10?'#e63946':pct<=20?'#ffd23f':'#2a9d8f'; el.setAttribute('aria-label',`${pct}% battery${batteryInfo.charging?', charging':''}`);
+    const charging=!!batteryInfo.charging;
+    el.classList.toggle('low',pct<=20||charging);
+    el.classList.toggle('critical',pct<=10&&!charging);
+    el.classList.toggle('very-low',pct<=5&&!charging);
+    el.classList.toggle('charging',charging);
+    fill.style.background=charging?'#2a9d8f':pct<=10?'#e63946':pct<=20?'#ffd23f':'#2a9d8f';
+    el.setAttribute('aria-label',charging?`${pct}% battery, charging`:`${pct}% battery${pct<=10?', critically low':pct<=20?', low':''}`);
   }
 
   // Wonder Lab owns long-press gestures. Never let the browser turn them into

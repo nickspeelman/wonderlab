@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.3';
+const CACHE = 'roscoe-wonder-lab-26.5';
 
 const ASSETS = [
   './',
