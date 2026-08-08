@@ -64,7 +64,7 @@ Lab state, drawings waiting to sync, pairing information, and Wonder Log observa
 The displayed build version is derived from the service worker cache name, for example:
 
 ```js
-const CACHE = 'roscoe-wonder-lab-26.7';
+const CACHE = 'roscoe-wonder-lab-26.8';
 ```
 
 The IndexedDB schema has a separate `DB_VERSION` constant in `js/app.js`.

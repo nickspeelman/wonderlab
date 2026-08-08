@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.7';
+const CACHE = 'roscoe-wonder-lab-26.8';
 
 const ASSETS = [
   './',
@@ -9,6 +9,9 @@ const ASSETS = [
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
   './assets/companion-qr.png',
+  './assets/icons/favicon.ico',
+  './assets/images/santa.png',
+  './assets/images/trick-or-treaters.png',
   './audio/ui/broom.mp3',
   './audio/ui/click.mp3',
   './audio/ui/home.mp3',

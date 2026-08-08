@@ -748,16 +748,15 @@
         <div class="time-sun" id="timeSun">☀️</div><div class="time-moon" id="timeMoon">🌕</div>
         <div class="holiday-rainbow" id="holidayRainbow"></div>
         <div class="time-cloud cloud-a">☁️</div><div class="time-cloud cloud-b">☁️</div>
-        <div class="time-birds" id="timeBirds">⌁⌁</div>
         <div class="time-shooting-star" id="shootingStar">✦</div>
-        <div class="time-santa" id="timeSanta">🛷</div>
+        <img class="time-santa" id="timeSanta" src="assets/images/santa.png" alt="" aria-hidden="true" />
         <div class="time-hearts" id="timeHearts">❤️　💗　❤️</div>
         <div class="time-fireworks" id="timeFireworks">🎆　🎇</div>
         <div class="time-ground" id="timeGround"></div>
         <div class="time-tree" id="timeTree"><div class="tree-trunk"></div><div class="tree-crown">${leaves}</div><div class="tree-owl" id="treeOwl">🦉</div></div>
         <div class="time-rooster" id="timeRooster">🐓</div>
         <div class="time-pumpkins" id="timePumpkins">🎃　🎃</div>
-        <div class="time-tricksters" id="timeTricksters">🧙　🦸　👻</div>
+        <img class="time-tricksters" id="timeTricksters" src="assets/images/trick-or-treaters.png" alt="" aria-hidden="true" />
         <div class="time-presents" id="timePresents">🎁　🎁</div>
       </section>
       <section class="time-console">
@@ -864,7 +863,6 @@
     world.style.setProperty('--leaf-opacity',s.leafOpacity);
     world.style.setProperty('--leaf-hue',s.leafHue);
     world.style.setProperty('--snow-opacity',s.snowOpacity);
-    document.getElementById('timeBirds').classList.toggle('show',h>=7&&h<17&&s.name!=='winter');
     document.getElementById('timeRooster').classList.toggle('show',h>=5.75&&h<7);
     document.getElementById('treeOwl').classList.toggle('show',h>=20.5||h<1);
     document.getElementById('shootingStar').classList.toggle('show',h>=0&&h<.35);
