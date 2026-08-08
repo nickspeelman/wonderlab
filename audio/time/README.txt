@@ -7,7 +7,6 @@ birds.mp3            reserved for morning birds (visual only in v25)
 bell.mp3             noon bell/chime
 crickets.mp3         loopable dusk/night crickets
 owl.mp3              owl hoot
-shooting-star.mp3    subtle shimmer/whoosh at midnight
 leaves.mp3           autumn/large calendar movement rustle
 winter-wind.mp3      reserved for winter transition
 trick-or-treat.mp3   footsteps / distant children, no speech preferred

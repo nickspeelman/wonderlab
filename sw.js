@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.11';
+const CACHE = 'roscoe-wonder-lab-26.13';
 
 const ASSETS = [
   './',
@@ -40,7 +40,6 @@ const ASSETS = [
   './audio/time/leaves.mp3',
   './audio/time/owl.mp3',
   './audio/time/rooster.mp3',
-  './audio/time/shooting-star.mp3',
   './audio/time/sleigh-bells.mp3',
   './audio/time/trick-or-treat.mp3',
   './audio/time/winter-wind.mp3'
