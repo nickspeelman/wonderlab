@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.6';
+const CACHE = 'roscoe-wonder-lab-26.7';
 
 const ASSETS = [
   './',
@@ -62,6 +62,111 @@ function isCoreRequest(request) {
   }
 }
 
+
+function isAudioRequest(request) {
+  try {
+    const url = new URL(request.url);
+    return url.origin === self.location.origin &&
+      url.pathname.startsWith('/audio/') &&
+      url.pathname.toLowerCase().endsWith('.mp3');
+  } catch {
+    return false;
+  }
+}
+
+async function getFullAudioResponse(request) {
+  const cache = await caches.open(CACHE);
+  const url = new URL(request.url);
+
+  // Match by URL rather than by the Range-bearing Request object. This makes
+  // sure a cached full MP3 can satisfy media requests such as bytes=0-.
+  let response = await cache.match(url.href, { ignoreSearch: true });
+  if (response) return response;
+
+  // If an audio file somehow missed precaching, fetch the complete file (not
+  // the requested byte range), cache it, and then serve from that full copy.
+  try {
+    response = await fetch(url.href, { cache: 'no-store' });
+    if (response && response.ok) {
+      await cache.put(url.href, response.clone());
+      return response;
+    }
+  } catch {
+    // Fall through to a clean 503 response below.
+  }
+
+  return null;
+}
+
+async function serveAudioRequest(request) {
+  const fullResponse = await getFullAudioResponse(request);
+  if (!fullResponse) {
+    return new Response('Audio asset unavailable.', {
+      status: 503,
+      statusText: 'Service Unavailable'
+    });
+  }
+
+  const rangeHeader = request.headers.get('range');
+  if (!rangeHeader) return fullResponse;
+
+  const bytes = await fullResponse.arrayBuffer();
+  const size = bytes.byteLength;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+
+  if (!match || (!match[1] && !match[2])) {
+    return new Response(null, {
+      status: 416,
+      statusText: 'Range Not Satisfiable',
+      headers: { 'Content-Range': `bytes */${size}` }
+    });
+  }
+
+  let start;
+  let end;
+
+  if (!match[1]) {
+    // Suffix range, e.g. "bytes=-500".
+    const suffixLength = Number(match[2]);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return new Response(null, {
+        status: 416,
+        statusText: 'Range Not Satisfiable',
+        headers: { 'Content-Range': `bytes */${size}` }
+      });
+    }
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) ||
+      start < 0 || end < start || start >= size) {
+    return new Response(null, {
+      status: 416,
+      statusText: 'Range Not Satisfiable',
+      headers: { 'Content-Range': `bytes */${size}` }
+    });
+  }
+
+  end = Math.min(end, size - 1);
+  const chunk = bytes.slice(start, end + 1);
+  const headers = new Headers(fullResponse.headers);
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set('Content-Range', `bytes ${start}-${end}/${size}`);
+  headers.set('Content-Length', String(chunk.byteLength));
+  // The Response body exposed to the service worker is already decoded.
+  headers.delete('Content-Encoding');
+
+  return new Response(chunk, {
+    status: 206,
+    statusText: 'Partial Content',
+    headers
+  });
+}
+
 async function cacheFreshAsset(cache, asset) {
   // Bypass the browser HTTP cache when installing a new Wonder Lab build.
   // Otherwise Chrome can hand the new service worker an older app.js/styles.css.
@@ -98,6 +203,13 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
 
+  // Media elements commonly use HTTP Range requests. Serve MP3s from the
+  // full precached file and synthesize a proper 206 Partial Content response.
+  if (isAudioRequest(event.request)) {
+    event.respondWith(serveAudioRequest(event.request));
+    return;
+  }
+
   if (isCoreRequest(event.request)) {
     // Network-first for the application shell. A successful online request is
     // written back to the current cache; offline use falls back to cached files.
@@ -123,18 +235,21 @@ self.addEventListener('fetch', event => {
   // Cache-first remains appropriate for immutable/heavy assets such as icons,
   // audio and activity media. Fetch and cache anything we have not seen yet.
   event.respondWith((async () => {
-    const cached = await caches.match(event.request);
+    const cache = await caches.open(CACHE);
+    const cached = await cache.match(event.request, { ignoreSearch: true });
     if (cached) return cached;
     try {
       const response = await fetch(event.request);
       if (response && response.ok && new URL(event.request.url).origin === self.location.origin) {
-        const cache = await caches.open(CACHE);
         await cache.put(event.request, response.clone());
       }
       return response;
     } catch {
-      if (event.request.mode === 'navigate') return caches.match('./index.html');
-      throw new Error('Offline and asset is not cached.');
+      if (event.request.mode === 'navigate') return cache.match('./index.html');
+      return new Response('Asset unavailable.', {
+        status: 503,
+        statusText: 'Service Unavailable'
+      });
     }
   })());
 });
