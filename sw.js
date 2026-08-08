@@ -1,5 +1,5 @@
 const CACHE = 'roscoe-wonder-lab-26.15';
-//force refresh
+
 const ASSETS = [
   './',
   './index.html',
