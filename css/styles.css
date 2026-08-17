@@ -434,3 +434,13 @@ img, button, canvas, .made-shape, .physics-object, .picture-object {
 .adult-btn.danger-soft{background:#ffe3e6}
 .companion-quick-qr{display:flex;align-items:center;justify-content:center;gap:12px;margin:10px auto 16px;padding:8px 12px;width:max-content;max-width:100%;border:2px dashed rgba(23,50,77,.35);border-radius:16px;text-align:left;background:#fffdf5}
 .companion-quick-qr img{display:block;width:76px;height:76px;image-rendering:pixelated;border-radius:8px}
+
+/* V27 toddler interaction resilience */
+.switch-card{touch-action:none;user-select:none;-webkit-user-select:none}
+.switch-card .toggle{touch-action:none}
+.switch-card.dragging .toggle-knob{
+  transition:none!important;
+  transform:translateX(var(--switch-drag-x,0px))!important;
+}
+.switch-card.dragging .toggle{background:#dde3e7}
+.switch-card.dragging.drag-preview-on .toggle{background:var(--yellow)}

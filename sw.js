@@ -1,4 +1,4 @@
-const CACHE = 'roscoe-wonder-lab-26.18';
+const CACHE = 'roscoe-wonder-lab-27.0';
 
 const ASSETS = [
   './',
@@ -101,6 +101,21 @@ async function getFullAudioResponse(request) {
 }
 
 async function serveAudioRequest(request) {
+  const rangeHeader = request.headers.get('range');
+
+  // Let the network/server satisfy Range requests when online. This avoids the
+  // old worker path that materialized an entire multi-megabyte MP3 in memory for
+  // every requested slice. ChromeOS is especially sensitive to that overhead.
+  if (rangeHeader) {
+    try {
+      const ranged = await fetch(request);
+      if (ranged && (ranged.ok || ranged.status === 206)) return ranged;
+    } catch {
+      // Offline: fall back to the complete precached response below. Browsers can
+      // play a full 200 response even when the speculative request used Range.
+    }
+  }
+
   const fullResponse = await getFullAudioResponse(request);
   if (!fullResponse) {
     return new Response('Audio asset unavailable.', {
@@ -108,65 +123,7 @@ async function serveAudioRequest(request) {
       statusText: 'Service Unavailable'
     });
   }
-
-  const rangeHeader = request.headers.get('range');
-  if (!rangeHeader) return fullResponse;
-
-  const bytes = await fullResponse.arrayBuffer();
-  const size = bytes.byteLength;
-  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
-
-  if (!match || (!match[1] && !match[2])) {
-    return new Response(null, {
-      status: 416,
-      statusText: 'Range Not Satisfiable',
-      headers: { 'Content-Range': `bytes */${size}` }
-    });
-  }
-
-  let start;
-  let end;
-
-  if (!match[1]) {
-    // Suffix range, e.g. "bytes=-500".
-    const suffixLength = Number(match[2]);
-    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
-      return new Response(null, {
-        status: 416,
-        statusText: 'Range Not Satisfiable',
-        headers: { 'Content-Range': `bytes */${size}` }
-      });
-    }
-    start = Math.max(0, size - suffixLength);
-    end = size - 1;
-  } else {
-    start = Number(match[1]);
-    end = match[2] ? Number(match[2]) : size - 1;
-  }
-
-  if (!Number.isFinite(start) || !Number.isFinite(end) ||
-      start < 0 || end < start || start >= size) {
-    return new Response(null, {
-      status: 416,
-      statusText: 'Range Not Satisfiable',
-      headers: { 'Content-Range': `bytes */${size}` }
-    });
-  }
-
-  end = Math.min(end, size - 1);
-  const chunk = bytes.slice(start, end + 1);
-  const headers = new Headers(fullResponse.headers);
-  headers.set('Accept-Ranges', 'bytes');
-  headers.set('Content-Range', `bytes ${start}-${end}/${size}`);
-  headers.set('Content-Length', String(chunk.byteLength));
-  // The Response body exposed to the service worker is already decoded.
-  headers.delete('Content-Encoding');
-
-  return new Response(chunk, {
-    status: 206,
-    statusText: 'Partial Content',
-    headers
-  });
+  return fullResponse;
 }
 
 async function cacheFreshAsset(cache, asset) {

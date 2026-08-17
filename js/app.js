@@ -46,6 +46,9 @@
   let activeCleanup = () => {};
   let lastTouchSampleAt = 0;
   let buildVersion = 'Checking…';
+  let analyticsSaveTimer = null;
+  let analyticsDirty = false;
+  let preferredVoice = null;
 
   async function refreshBuildVersion(){
     const prefix='roscoe-wonder-lab-';
@@ -71,6 +74,15 @@
   let lastCollisionSoundAt = 0;
   let lastBounceSoundAt = 0;
 
+  // V27: keep frantic toddler input responsive without letting the same control
+  // repeatedly start expensive work faster than the Chromebook can finish it.
+  const RAPID_REPEAT_MS = 180;
+  const SPEECH_COALESCE_MS = 450;
+  const lastButtonActionAt = new WeakMap();
+  let lastSpeechStartedAt = 0;
+  let pendingSpeechTimer = 0;
+  let pendingSpeechText = '';
+
   const AUDIO_FILES = {
     ui: {
       click:'audio/ui/click.mp3', toggle:'audio/ui/toggle.mp3', pop:'audio/ui/pop.mp3', broom:'audio/ui/broom.mp3', home:'audio/ui/home.mp3'
@@ -94,6 +106,13 @@
   const LOOPING_SWITCHES = new Set(['rain','bubbles','train','wind','snow','lightning']);
   const ONE_SHOT_SWITCHES = new Set(['light','stars','rainbow']);
   const MIX = { voice:1, ui:.45, pop:.60, broom:.45, switchOneShot:.55, motion:.50, ambient:.32 };
+  const audioPool = new Map();
+  const PRELOAD_AUDIO_PATHS = new Set([
+    ...Object.values(AUDIO_FILES.ui),
+    ...Object.values(AUDIO_FILES.motion),
+    AUDIO_FILES.switches.light, AUDIO_FILES.switches.stars, AUDIO_FILES.switches.rainbow,
+    AUDIO_FILES.time.tick, AUDIO_FILES.time.rooster, AUDIO_FILES.time.bell, AUDIO_FILES.time.owl
+  ]);
 
   const clone = obj => JSON.parse(JSON.stringify(obj));
 
@@ -170,6 +189,24 @@
   }
   const save = key => idbSet(key, clone(state[key]));
 
+  function flushAnalyticsSave(){
+    if(analyticsSaveTimer){ clearTimeout(analyticsSaveTimer); analyticsSaveTimer=null; }
+    if(!analyticsDirty || !db) return Promise.resolve();
+    analyticsDirty=false;
+    return save('analytics');
+  }
+
+  function queueAnalyticsSave(delay=1800){
+    if(!analyticsEnabled()) return;
+    analyticsDirty=true;
+    if(analyticsSaveTimer) return;
+    analyticsSaveTimer=setTimeout(()=>{
+      analyticsSaveTimer=null;
+      const run=()=>flushAnalyticsSave().catch(()=>{});
+      if('requestIdleCallback' in window) requestIdleCallback(run,{timeout:1200});
+      else run();
+    },delay);
+  }
 
   const nowISO = () => new Date().toISOString();
   const weekAgoMs = () => Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -187,7 +224,7 @@
     if(!analyticsEnabled()) return;
     state.analytics.events.push({id:crypto.randomUUID(),time:nowISO(),activity,event,details,syncedAt:null});
     trimAnalytics();
-    save('analytics').catch(()=>{});
+    queueAnalyticsSave();
   }
 
   function markMilestone(key,label,activity){
@@ -200,7 +237,7 @@
     if(!analyticsEnabled() || state.analytics.currentSession) return;
     state.analytics.currentSession={id:crypto.randomUUID(),startedAt:nowISO(),batteryStart:batteryInfo?Math.round(batteryInfo.level*100):null};
     state.analytics.activityStartedAt=Date.now();
-    save('analytics').catch(()=>{});
+    queueAnalyticsSave(800);
   }
 
   function closeActivitySegment(nextScreen=null){
@@ -230,7 +267,7 @@
     });
     state.analytics.currentSession=null;
     trimAnalytics();
-    save('analytics').catch(()=>{});
+    queueAnalyticsSave(500);
   }
 
   function resumeSession(){
@@ -245,7 +282,7 @@
     const r=container.getBoundingClientRect(); if(!r.width||!r.height) return;
     state.analytics.touches.push({time:nowISO(),activity,x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))});
     trimAnalytics();
-    save('analytics').catch(()=>{});
+    queueAnalyticsSave();
   }
 
   function bindTouchSampling(){
@@ -272,14 +309,41 @@
     console.warn(`[Wonder Lab audio] ${kind} failed for ${path}`, error || 'Unknown media error');
   }
 
+  function createPooledAudio(path){
+    const a=new Audio();
+    a.preload='auto';
+    a.src=path;
+    a.addEventListener('error',()=>logAudioFailure('load',path,a.error));
+    return a;
+  }
+
+  function primeAudioPool(){
+    for(const path of PRELOAD_AUDIO_PATHS){
+      if(audioPool.has(path)) continue;
+      const a=createPooledAudio(path);
+      audioPool.set(path,[a]);
+      // Starting the fetch/decode pipeline before the first toddler tap removes
+      // a large latency spike on slower ChromeOS hardware.
+      try{ a.load(); }catch{}
+    }
+  }
+
+  function pooledAudio(path){
+    let pool=audioPool.get(path);
+    if(!pool){ pool=[createPooledAudio(path)]; audioPool.set(path,pool); }
+    let a=pool.find(item=>item.paused || item.ended);
+    if(!a && pool.length<3){ a=createPooledAudio(path); pool.push(a); }
+    return a || pool[0];
+  }
+
   function oneShot(path, relativeVolume=.5, playbackRate=1){
     if(!state.preferences.soundEffects || !path) return null;
     try{
-      const a=new Audio(path);
-      a.preload='auto';
+      const a=pooledAudio(path);
+      a.pause();
+      try{ a.currentTime=0; }catch{}
       a.volume=Math.min(1,masterVolume()*relativeVolume);
       a.playbackRate=playbackRate;
-      a.addEventListener('error',()=>logAudioFailure('load',path,a.error),{once:true});
       const playPromise=a.play();
       if(playPromise?.catch) playPromise.catch(error=>logAudioFailure('play',path,error));
       return a;
@@ -337,7 +401,18 @@
   // V15: synthesized beeps removed; recorded UI/action sounds are used instead.
   function tone(){ /* intentionally silent */ }
 
-  function speak(text){
+  function refreshPreferredVoice(){
+    if(!('speechSynthesis' in window)) return;
+    const voices=window.speechSynthesis.getVoices();
+    preferredVoice = voices.find(v => v.localService && /^en-US/i.test(v.lang))
+      || voices.find(v => v.localService && /^en/i.test(v.lang))
+      || voices.find(v => /^en-US/i.test(v.lang) && /google|natural/i.test(v.name))
+      || voices.find(v => /^en-US/i.test(v.lang))
+      || voices.find(v => /^en/i.test(v.lang))
+      || null;
+  }
+
+  function speakNow(text){
     if (!state.preferences.voiceResponses || !text || !('speechSynthesis' in window)) return;
     try{
       window.speechSynthesis.cancel();
@@ -348,14 +423,32 @@
       utterance.onstart=()=>{voiceDucking=true;updateLoopVolumes();};
       const release=()=>{voiceDucking=false;updateLoopVolumes();};
       utterance.onend=release;utterance.onerror=release;
-      const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find(v => /^en-US/i.test(v.lang) && /google|natural/i.test(v.name))
-        || voices.find(v => /^en-US/i.test(v.lang))
-        || voices.find(v => /^en/i.test(v.lang));
-      if (preferred) utterance.voice = preferred;
+      if (!preferredVoice) refreshPreferredVoice();
+      if (preferredVoice) utterance.voice = preferredVoice;
+      lastSpeechStartedAt=performance.now();
       window.speechSynthesis.speak(utterance);
     }catch{}
   }
+
+  function speak(text){
+    if (!state.preferences.voiceResponses || !text || !('speechSynthesis' in window)) return;
+    const now=performance.now();
+    const elapsed=now-lastSpeechStartedAt;
+    if(elapsed>=SPEECH_COALESCE_MS && !pendingSpeechTimer){
+      speakNow(text);
+      return;
+    }
+    // First response speaks immediately; a burst after that collapses to its
+    // latest phrase instead of repeatedly restarting ChromeOS TTS.
+    pendingSpeechText=text;
+    clearTimeout(pendingSpeechTimer);
+    pendingSpeechTimer=setTimeout(()=>{
+      pendingSpeechTimer=0;
+      const latest=pendingSpeechText; pendingSpeechText='';
+      speakNow(latest);
+    },Math.max(80,SPEECH_COALESCE_MS-Math.max(0,elapsed)));
+  }
+
 
   function toast(msg){ const el=document.createElement('div'); el.className='toast'; el.textContent=msg; document.body.appendChild(el); setTimeout(()=>el.remove(),1500); }
 
@@ -381,11 +474,42 @@
     }
   }
 
+  function pulseButton(button){
+    // Web Animations lets every physical tap flash independently without a
+    // forced layout/reflow on low-end hardware.
+    try{
+      button.animate(
+        [{filter:'brightness(1)'},{filter:'brightness(1.16)'},{filter:'brightness(1)'}],
+        {duration:140,easing:'ease-out'}
+      );
+    }catch{}
+  }
+
   document.addEventListener('pointerdown',e=>{
     const button=e.target.closest('button');
     if(!button || button.disabled || button.id==='homeBtn' || button.id==='broomBtn') return;
+    pulseButton(button);
     playNamed('ui',button.classList.contains('switch-card')?'toggle':'click',MIX.ui);
   },{passive:true});
+
+  document.addEventListener('click',e=>{
+    const button=e.target.closest('button');
+    if(!button || button.disabled || !button.closest('.content') || button.dataset.allowRapid==='true') return;
+    // Switch drags commit through pointer events and explicitly suppress the
+    // synthetic click that follows a drag.
+    if(button.dataset.dragHandled==='true'){
+      button.dataset.dragHandled='';
+      e.preventDefault(); e.stopImmediatePropagation();
+      return;
+    }
+    const now=performance.now();
+    const last=lastButtonActionAt.get(button)||0;
+    if(now-last<RAPID_REPEAT_MS){
+      e.preventDefault(); e.stopImmediatePropagation();
+      return;
+    }
+    lastButtonActionAt.set(button,now);
+  },true);
 
   function addActivityTools(){
     const content=document.querySelector('main.content');
@@ -420,7 +544,8 @@
       state.analytics.activityStartedAt=Date.now();
       if(screen!=='home') logEvent(screen,'activity_enter',{from:previous});
     }
-    await Promise.all([save('currentScreen'),save('analytics')]);
+    queueAnalyticsSave(400);
+    await save('currentScreen');
     if(screen==='home'&&state.device.deviceToken&&navigator.onLine)syncCompanionNow(false).catch(()=>{});
     if (screen==='home') renderHome(); else renderActivity(screen);
   }
@@ -459,15 +584,69 @@
     shell('Switch Lab',`<div class="activity-wrap"><div class="switchboard"><div id="fxRear" class="fx-layer fx-rear"></div>${cards}<div id="fxFront" class="fx-layer fx-front"></div></div></div>`,true);
     activeCleanup=()=>stopAllSwitchSounds();
     const fxRear=document.getElementById('fxRear'),fxFront=document.getElementById('fxFront'); drawSwitchFx(fxRear,fxFront); syncSwitchSounds();
-    document.querySelectorAll('.switch-card').forEach(c=>c.onclick=async()=>{
-      const k=c.dataset.key; state.switchboard[k]=!state.switchboard[k]; c.classList.toggle('on');
-      if(state.switchboard[k])playSwitchOneShot(k);
-      speak(`${labels[k][1]} ${state.switchboard[k]?'on':'off'}`); await save('switchboard');
-      logEvent('switchboard','switch_toggled',{switch:k,on:state.switchboard[k]}); markMilestone('switch-first','Turned on a switch','switchboard');
+
+    async function commitSwitch(c,next,source='tap'){
+      const k=c.dataset.key;
+      c.classList.remove('dragging','drag-preview-on');
+      c.style.removeProperty('--switch-drag-x');
+      if(state.switchboard[k]===next) return;
+      state.switchboard[k]=next;
+      c.classList.toggle('on',next);
+      if(next)playSwitchOneShot(k);
+      speak(`${labels[k][1]} ${next?'on':'off'}`);
+      save('switchboard');
+      logEvent('switchboard','switch_toggled',{switch:k,on:next,source}); markMilestone('switch-first','Turned on a switch','switchboard');
       const onCount=Object.values(state.switchboard).filter(Boolean).length; if(onCount>=2)markMilestone('switch-two','Turned on two switches together','switchboard'); if(onCount===9)markMilestone('switch-all','Turned on every switch','switchboard');
       drawSwitchFx(fxRear,fxFront); syncSwitchSounds();
+    }
+
+    document.querySelectorAll('.switch-card').forEach(c=>{
+      let drag=null;
+      c.onclick=()=>commitSwitch(c,!state.switchboard[c.dataset.key],'tap');
+
+      c.addEventListener('pointerdown',e=>{
+        if(e.pointerType==='mouse' && e.button!==0) return;
+        const toggle=c.querySelector('.toggle');
+        const knob=c.querySelector('.toggle-knob');
+        const tr=toggle.getBoundingClientRect(), kr=knob.getBoundingClientRect();
+        const maxTravel=Math.max(1,tr.width-kr.width-16);
+        drag={id:e.pointerId,startX:e.clientX,moved:false,maxTravel,startOn:!!state.switchboard[c.dataset.key]};
+        try{c.setPointerCapture(e.pointerId)}catch{}
+      });
+
+      c.addEventListener('pointermove',e=>{
+        if(!drag || drag.id!==e.pointerId) return;
+        const dx=e.clientX-drag.startX;
+        if(Math.abs(dx)>5) drag.moved=true;
+        if(!drag.moved) return;
+        e.preventDefault();
+        const base=drag.startOn?drag.maxTravel:0;
+        const x=Math.max(0,Math.min(drag.maxTravel,base+dx));
+        c.classList.add('dragging');
+        c.style.setProperty('--switch-drag-x',`${x}px`);
+        c.classList.toggle('drag-preview-on',x>=drag.maxTravel/2);
+      });
+
+      const finishDrag=e=>{
+        if(!drag || drag.id!==e.pointerId) return;
+        const wasMoved=drag.moved;
+        if(wasMoved){
+          const raw=parseFloat(c.style.getPropertyValue('--switch-drag-x'))||0;
+          const next=raw>=drag.maxTravel/2;
+          c.dataset.dragHandled='true';
+          c.classList.remove('drag-preview-on');
+          commitSwitch(c,next,'drag');
+        }else{
+          c.classList.remove('dragging','drag-preview-on');
+          c.style.removeProperty('--switch-drag-x');
+        }
+        drag=null;
+      };
+      c.addEventListener('pointerup',finishDrag);
+      c.addEventListener('pointercancel',finishDrag);
     });
   }
+
 
   function drawSwitchFx(rear,front){
     rear.innerHTML=''; front.innerHTML='';
@@ -1005,6 +1184,11 @@
     const colorButtons=Object.entries(colors).map(([k,v])=>`<button class="motion-color ${state.physics.selectedColor===k?'active':''}" data-motion-color="${k}" style="--object-color:${v}" aria-label="${k}"></button>`).join('');
     shell('Motion Lab',`<div class="activity-wrap"><div class="motion-lab"><div class="physics-toolbar"><div class="motion-shape-row">${shapeButtons}<button id="removeMotion" aria-label="Remove last shape">−</button></div><div class="motion-color-row">${colorButtons}</div></div><div id="physicsStage" class="physics-stage"></div></div></div>`,true);
     const stage=document.getElementById('physicsStage'); const els=new Map(); const pairCollisionTimes=new Map(); let raf,last=performance.now();
+    let stageRect={left:0,top:0,width:0,height:0};
+    const refreshStageRect=()=>{ const r=stage.getBoundingClientRect(); stageRect={left:r.left,top:r.top,width:r.width,height:r.height}; };
+    requestAnimationFrame(refreshStageRect);
+    window.addEventListener('resize',refreshStageRect,{passive:true});
+    screen.orientation?.addEventListener?.('change',refreshStageRect);
     const drawObj=o=>{ const el=document.createElement('div'); el.className=`physics-object ${o.type}`; el.style.setProperty('--object-color',colors[o.color]||colors.red); stage.appendChild(el); els.set(o.id,el); bindPhysics(el,o); };
     state.physics.objects.forEach(drawObj);
     document.querySelectorAll('[data-motion-color]').forEach(b=>b.onclick=()=>{state.physics.selectedColor=b.dataset.motionColor;document.querySelectorAll('[data-motion-color]').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.motion-button-shape').forEach(x=>x.style.setProperty('--object-color',colors[state.physics.selectedColor]));save('physics');speak(b.dataset.motionColor);});
@@ -1013,7 +1197,7 @@
     const collisionSound=(impact,pairKey)=>{ const now=performance.now();const lastPair=pairCollisionTimes.get(pairKey)||0;if(impact<.14||now-lastPair<150)return;pairCollisionTimes.set(pairKey,now);playNamed('motion','collision',Math.min(.50,.18+impact*.22)); };
     const bounceSound=impact=>{ const now=performance.now();if(impact<.28||now-lastBounceSoundAt<120)return;lastBounceSoundAt=now;playNamed('motion','bounce',Math.min(.40,.18+impact*.12)); };
     const collide=()=>{
-      const a=state.physics.objects,r=stage.getBoundingClientRect();
+      const a=state.physics.objects,r=stageRect;
       for(let i=0;i<a.length;i++)for(let j=i+1;j<a.length;j++){
         const p=a[i],q=a[j],dx=(q.x-p.x)*r.width,dy=(q.y-p.y)*r.height,d=Math.hypot(dx,dy);
         const radius=o=>o.type==='stick'?42:38;const minDistance=radius(p)+radius(q);if(d>0&&d<minDistance){const nx=dx/d,ny=dy/d,over=minDistance-d;p.x-=nx*(over/2)/r.width;p.y-=ny*(over/2)/r.height;q.x+=nx*(over/2)/r.width;q.y+=ny*(over/2)/r.height;const rel=((q.vx-p.vx)*r.width)*nx+((q.vy-p.vy)*r.height)*ny;if(rel<0){const normRel=rel/Math.max(r.width,r.height);const impact=-normRel;const imp=impact*.9;p.vx-=imp*nx;p.vy-=imp*ny;q.vx+=imp*nx;q.vy+=imp*ny;if(p.type==='stick')p.omega-=ny*imp*4;if(q.type==='stick')q.omega+=ny*imp*4;collisionSound(impact,[p.id,q.id].sort().join(':'));}}
@@ -1057,7 +1241,7 @@
       tiltGravity={x:deadZone(x)*.9,y:deadZone(-y)*.9};
     };
     window.addEventListener('deviceorientation',tilt);
-    const tick=now=>{ const dt=Math.min(.03,(now-last)/1000);last=now; const r=stage.getBoundingClientRect();
+    const tick=now=>{ const dt=Math.min(.03,(now-last)/1000);last=now; const r=stageRect;
       // Do not run physics until layout has produced a real canvas. Older builds
       // could divide by zero here and permanently save Infinity/NaN positions.
       if(r.width<100 || r.height<100){raf=requestAnimationFrame(tick);return;}
@@ -1084,8 +1268,8 @@
           }
         }
       } bounceSound(strongestWall);collide();for(const o of state.physics.objects){const el=els.get(o.id);if(el){el.style.left=`calc(${o.x*100}% - ${o.type==='stick'?43:38}px)`;el.style.top=`calc(${o.y*100}% - ${o.type==='stick'?12:38}px)`;el.style.transform=o.type==='stick'?`rotate(${o.angle||0}rad)`:'';}}raf=requestAnimationFrame(tick); };
-    raf=requestAnimationFrame(tick); const saveInt=setInterval(()=>save('physics'),1000); activeCleanup=()=>{cancelAnimationFrame(raf);clearInterval(saveInt);save('physics');window.removeEventListener('deviceorientation',tilt)};
-    function bindPhysics(el,o){let drag=false,lastP=null,lastT=0;el.onpointerdown=e=>{drag=true;lastP={x:e.clientX,y:e.clientY};lastT=performance.now();el.setPointerCapture(e.pointerId);o.vx=o.vy=0;playNamed('motion','pickup',MIX.motion*.8);speak(`${o.color||''} ${o.type}`.trim());};el.onpointermove=e=>{if(!drag)return;const r=stage.getBoundingClientRect(),now=performance.now(),dt=Math.max(16,now-lastT);const dx=e.clientX-lastP.x,dy=e.clientY-lastP.y;o.vx=dx/r.width/(dt/1000);o.vy=dy/r.height/(dt/1000);if(o.type==='stick'&&Math.hypot(dx,dy)>1)o.omega+=(dx-dy)*.0025;o.x=(e.clientX-r.left)/r.width;o.y=(e.clientY-r.top)/r.height;lastP={x:e.clientX,y:e.clientY};lastT=now;};el.onpointerup=()=>{if(drag)playNamed('motion','drop',MIX.motion);drag=false;save('physics');};el.onpointercancel=el.onpointerup;}
+    raf=requestAnimationFrame(tick); const saveInt=setInterval(()=>save('physics'),3000); activeCleanup=()=>{cancelAnimationFrame(raf);clearInterval(saveInt);save('physics');window.removeEventListener('deviceorientation',tilt);window.removeEventListener('resize',refreshStageRect);screen.orientation?.removeEventListener?.('change',refreshStageRect)};
+    function bindPhysics(el,o){let drag=false,lastP=null,lastT=0;el.onpointerdown=e=>{drag=true;lastP={x:e.clientX,y:e.clientY};lastT=performance.now();el.setPointerCapture(e.pointerId);o.vx=o.vy=0;playNamed('motion','pickup',MIX.motion*.8);speak(`${o.color||''} ${o.type}`.trim());};el.onpointermove=e=>{if(!drag)return;const r=stageRect,now=performance.now(),dt=Math.max(16,now-lastT);const dx=e.clientX-lastP.x,dy=e.clientY-lastP.y;o.vx=dx/r.width/(dt/1000);o.vy=dy/r.height/(dt/1000);if(o.type==='stick'&&Math.hypot(dx,dy)>1)o.omega+=(dx-dy)*.0025;o.x=(e.clientX-r.left)/r.width;o.y=(e.clientY-r.top)/r.height;lastP={x:e.clientX,y:e.clientY};lastT=now;};el.onpointerup=()=>{if(drag)playNamed('motion','drop',MIX.motion);drag=false;save('physics');};el.onpointercancel=el.onpointerup;}
   }
 
   async function resetCurrent(animate=false){
@@ -1372,6 +1556,9 @@
 
   async function init(){
     await openDB(); await loadState(); await initBattery(); await refreshBuildVersion();
+    primeAudioPool();
+    refreshPreferredVoice();
+    window.speechSynthesis?.addEventListener?.('voiceschanged',refreshPreferredVoice);
     if(state.analytics.currentSession){
       const stale=state.analytics.currentSession;
       state.analytics.sessions.push({id:stale.id,startedAt:stale.startedAt,endedAt:nowISO(),durationMs:Math.min(4*60*60*1000,Math.max(0,Date.now()-new Date(stale.startedAt).getTime())),batteryStart:stale.batteryStart,batteryEnd:batteryInfo?Math.round(batteryInfo.level*100):null,recovered:true,syncedAt:null});
@@ -1379,10 +1566,18 @@
     }
     startSession();
     if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
-    if(state.device.deviceToken&&navigator.onLine){await syncPictureLibraryFromBackend(false);await syncDrawingQueue(false);await syncWonderLog(false);}
     renderActivityOrHome();
-    document.addEventListener('visibilitychange',()=>{if(document.hidden)endSession();else resumeSession();});
-    window.addEventListener('pagehide',endSession);
+    if(state.device.deviceToken&&navigator.onLine){
+      const backgroundSync=()=>{
+        syncPictureLibraryFromBackend(false).catch(()=>{});
+        syncDrawingQueue(false).catch(()=>{});
+        syncWonderLog(false).catch(()=>{});
+      };
+      if('requestIdleCallback' in window) requestIdleCallback(backgroundSync,{timeout:2500});
+      else setTimeout(backgroundSync,250);
+    }
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){endSession();flushAnalyticsSave().catch(()=>{});}else resumeSession();});
+    window.addEventListener('pagehide',()=>{endSession();flushAnalyticsSave().catch(()=>{});});
     window.addEventListener('online',()=>{if(state.device.deviceToken){syncPictureLibraryFromBackend(false).catch(()=>{});syncDrawingQueue(false).catch(()=>{});syncWonderLog(false).catch(()=>{});}});
     setInterval(()=>{if(state.device.deviceToken&&navigator.onLine)syncWonderLog(false).catch(()=>{});},5*60*1000);
   }
